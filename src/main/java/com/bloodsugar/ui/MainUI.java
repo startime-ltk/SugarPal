@@ -2148,14 +2148,33 @@ public class MainUI {
     }
 
     /**
-     * “数据位置”设置对话框：查看/修改数据存放目录。
-     * 规则：新目录为空则下次启动自动初始化；新目录已有本应用数据则直接使用；
-     * 旧目录有数据时提示迁移；保存后需重启应用生效。
+     * “数据位置”设置对话框：查看“当前数据位置 → 迁移到新位置”。
+     * 以本进程启动时实际绑定的目录为迁移源（保证即使上一次修改尚未重启也能正确迁移），
+     * 新位置为空则全量迁移；新位置已有本应用数据则弹冲突确认（覆盖/保留/取消），
+     * 保存后需重启应用生效。
      */
     private void showDataLocationDialog(Stage owner) {
-        Path current = DataLocation.getDataRoot();
+        Path current = DataLocation.getStartupDataRoot();
+        Path recorded = DataLocation.getDataRoot();
+        boolean pendingRestart = !current.equals(recorded);
 
-        TextField pathField = new TextField(current.toString());
+        Label currentTitle = new Label("当前数据位置（本应用正在使用的目录）");
+        currentTitle.setStyle("-fx-font-size: 12px; -fx-font-weight: bold; -fx-text-fill: #667080;");
+        TextField currentField = new TextField(current.toString());
+        currentField.setEditable(false);
+        currentField.setPrefColumnCount(42);
+        currentField.setStyle("-fx-background-color: #ECEFF3; -fx-text-fill: #667080; "
+                + "-fx-border-color: #D2D8E0; -fx-border-radius: 6; -fx-background-radius: 6;");
+        currentField.setFocusTraversable(false);
+
+        Label arrow = new Label("↓  迁移到  ↓");
+        arrow.setStyle("-fx-font-size: 12px; -fx-font-weight: bold; -fx-text-fill: #98A1AF;");
+
+        Label targetTitle = new Label("新数据位置");
+        targetTitle.setStyle("-fx-font-size: 12px; -fx-font-weight: bold; -fx-text-fill: #667080;");
+
+        TextField pathField = new TextField();
+        pathField.setPromptText("请选择或输入要把数据迁移到的目录");
         pathField.setPrefColumnCount(42);
         Button browseBtn = new Button("浏览…");
         browseBtn.setStyle("-fx-background-color: linear-gradient(to bottom, #C9CDD6, #98A1AF); "
@@ -2166,11 +2185,9 @@ public class MainUI {
             DirectoryChooser chooser = new DirectoryChooser();
             chooser.setTitle("选择数据存放目录");
             String typed = pathField.getText() == null ? "" : pathField.getText().trim();
-            if (!typed.isEmpty()) {
-                Path cur = Path.of(typed);
-                if (Files.isDirectory(cur)) {
-                    chooser.setInitialDirectory(cur.toFile());
-                }
+            Path init = typed.isEmpty() ? current : Path.of(typed);
+            if (Files.isDirectory(init)) {
+                chooser.setInitialDirectory(init.toFile());
             }
             File dir = chooser.showDialog(owner);
             if (dir != null) {
@@ -2181,12 +2198,15 @@ public class MainUI {
         picker.setAlignment(Pos.CENTER_LEFT);
         HBox.setHgrow(pathField, Priority.ALWAYS);
 
-        Label hint = new Label("当前数据目录存放本应用的数据库与配置（血糖记录、用餐时间、AI 建议设置等）。\n"
-                + "更换目录：新目录为空则自动创建并初始化；新目录已有本应用数据则直接使用；\n"
-                + "旧目录有数据时会询问是否迁移。保存后需重启应用生效。");
+        Label hint = new Label("新位置为空时：自动把正在使用的全部数据文件（数据库、AI 配置等）完整迁移过去。\n"
+                + "新位置已有本应用数据时：会先弹出冲突确认（覆盖目标数据 / 保留目标数据 / 取消），不会静默覆盖。\n"
+                + "保存后请完全退出并重新启动糖伴SugarPal，之后所有数据读写将使用新位置。");
         hint.setWrapText(true);
         hint.setTextFill(Color.web(COLOR_TEXT));
         hint.setStyle("-fx-font-size: 12px;");
+
+        VBox currentBox = new VBox(4, currentTitle, currentField);
+        VBox targetBox = new VBox(4, targetTitle, pathField);
 
         Dialog<ButtonType> dialog = new Dialog<>();
         dialog.initOwner(owner);
@@ -2195,8 +2215,16 @@ public class MainUI {
         DialogPane pane = dialog.getDialogPane();
         styleDialogPane(pane);
         pane.getButtonTypes().addAll(ButtonType.OK, ButtonType.CANCEL);
-        VBox content = new VBox(12, picker, hint);
+        VBox content = new VBox(10);
         content.setPadding(new Insets(8));
+        content.getChildren().addAll(currentBox, arrow, targetBox, picker, hint);
+        if (pendingRestart) {
+            Label pendingLabel = new Label("注意：上一次保存的位置尚未重启生效。本次迁移将以“当前数据位置”（正在使用的目录）为源执行。");
+            pendingLabel.setWrapText(true);
+            pendingLabel.setTextFill(Color.web("#B5493A"));
+            pendingLabel.setStyle("-fx-font-size: 12px; -fx-font-weight: bold;");
+            content.getChildren().add(pendingLabel);
+        }
         pane.setContent(content);
 
         Button ok = (Button) pane.lookupButton(ButtonType.OK);
@@ -2232,6 +2260,9 @@ public class MainUI {
 
         try {
             String message = applyDataLocationChange(current, target);
+            if (message == null) {
+                return; // 用户在冲突确认中选择了取消
+            }
             Alert info = new Alert(Alert.AlertType.INFORMATION);
             info.initOwner(owner);
             info.setTitle("数据位置已更新");
@@ -2244,61 +2275,172 @@ public class MainUI {
         }
     }
 
+    /** 需要随数据位置一起迁移的本应用数据文件（白名单；data.lock.db 是运行期锁文件，不迁移） */
+    private static final List<String> DATA_FILE_NAMES = List.of(
+            "data.mv.db", "config.properties", "data.trace.db");
+
     /**
-     * 执行数据目录切换：关闭连接池 → 必要时迁移数据/配置 → 写入 location.properties。
-     * 完成后提示重启应用，所有数据读写将切到新目录。
+     * 执行数据目录切换：校验 → 冲突确认 → 关闭连接池 → 迁移/覆盖（可回滚） → 写入 location.properties。
+     *
+     * <p>迁移源为 {@code sourceRoot}（调用方传入本进程启动时实际绑定的目录），目标为新目录：
+     * <ul>
+     *   <li>源无数据：不迁移，仅保存新位置，重启后全新初始化；</li>
+     *   <li>目标已有本应用数据：弹三选确认（覆盖目标数据 / 保留目标数据 / 取消），绝不静默覆盖；
+     *       选择覆盖时先把目标原有数据备份到 {@code 目标/backup_时间戳}，失败自动回滚；</li>
+     *   <li>目标为空：完整复制全部数据文件，失败删除已复制文件并报错，源数据保持不动。</li>
+     * </ul>
+     *
+     * @return 面向用户的迁移结果说明；用户取消冲突处理时返回 {@code null}
      */
-    private String applyDataLocationChange(Path oldRoot, Path newRoot) throws IOException {
-        boolean oldHasDb = Files.exists(oldRoot.resolve("data.mv.db"));
-        boolean newHasDb = Files.exists(newRoot.resolve("data.mv.db"));
-        boolean oldHasConfig = Files.exists(oldRoot.resolve("config.properties"));
-        boolean newHasConfig = Files.exists(newRoot.resolve("config.properties"));
+    private String applyDataLocationChange(Path sourceRoot, Path targetRoot) throws IOException {
+        boolean sourceHasDb = Files.exists(sourceRoot.resolve("data.mv.db"));
+        boolean sourceHasConfig = Files.exists(sourceRoot.resolve("config.properties"));
+        boolean targetHasDb = Files.exists(targetRoot.resolve("data.mv.db"));
+        boolean targetHasConfig = Files.exists(targetRoot.resolve("config.properties"));
+        boolean sourceHasData = sourceHasDb || sourceHasConfig;
+        boolean targetHasData = targetHasDb || targetHasConfig;
 
-        // 先关闭连接池释放旧库文件句柄，保证迁移出的文件完整一致
-        DatabaseConfig.closeDataSource();
-        Files.createDirectories(newRoot);
+        // 目标目录创建与可写校验放在关闭连接池之前：失败时不破坏当前会话
+        try {
+            Files.createDirectories(targetRoot);
+        } catch (IOException e) {
+            throw new IOException("无法创建目标目录：" + targetRoot + "（" + e.getMessage() + "）", e);
+        }
+        if (!Files.isWritable(targetRoot)) {
+            throw new IOException("目标目录不可写，请检查权限后重试：" + targetRoot);
+        }
 
-        StringBuilder report = new StringBuilder();
-        if (newHasDb) {
-            // 新目录已有本应用数据库：直接使用该目录数据，绝不覆盖
-            report.append("新目录已存在本应用数据库，将直接使用该目录数据（旧目录文件未改动）。\n");
-        } else if (oldHasDb) {
+        if (!sourceHasData) {
+            // 当前数据目录无数据：无需迁移，直接保存新位置，重启后全新初始化
+            DataLocation.saveDataRoot(targetRoot);
+            return "当前数据位置没有本应用数据（未找到 data.mv.db / config.properties），无需迁移。\n"
+                    + "设置已保存：重启后将在新位置全新初始化数据库。\n\n新位置：" + targetRoot;
+        }
+
+        // 目标已有本应用数据 → 冲突确认（在关闭连接池之前完成，取消不破坏当前会话）
+        if (targetHasData) {
+            ButtonType overwrite = new ButtonType("覆盖目标数据", ButtonBar.ButtonData.OK_DONE);
+            ButtonType keepTarget = new ButtonType("保留目标数据", ButtonBar.ButtonData.OK_DONE);
+            ButtonType cancel = new ButtonType("取消", ButtonBar.ButtonData.CANCEL_CLOSE);
             Alert confirm = new Alert(Alert.AlertType.CONFIRMATION);
-            confirm.setTitle("迁移数据");
-            confirm.setHeaderText("检测到旧目录中有数据");
-            confirm.setContentText("是否将旧目录的数据迁移到新目录？\n\n"
-                    + "选择「确定」：复制数据库与配置到新目录，重启后继续使用全部历史记录。\n"
-                    + "选择「取消」：新目录将作为全新数据开始，旧目录文件保留不动。\n\n"
-                    + "旧目录：" + oldRoot + "\n新目录：" + newRoot);
+            confirm.setTitle("数据冲突");
+            confirm.setHeaderText("新位置已存在本应用数据");
+            confirm.setContentText("目标位置检测到本应用数据，请选择处理方式：\n\n"
+                    + "「覆盖目标数据」：用当前数据替换目标位置数据（目标原数据会先备份到目标位置下 backup_时间戳 目录，可恢复）。\n"
+                    + "「保留目标数据」：不迁移当前数据，重启后直接使用目标位置已有数据（当前数据保留不动）。\n"
+                    + "「取消」：不做任何修改。\n\n"
+                    + "当前数据位置：" + sourceRoot + "\n"
+                    + "目标位置：" + targetRoot);
             styleDialogPane(confirm.getDialogPane());
+            confirm.getDialogPane().getButtonTypes().setAll(overwrite, keepTarget, cancel);
             Optional<ButtonType> choice = confirm.showAndWait();
-            boolean migrate = choice.isPresent() && choice.get() == ButtonType.OK;
-            if (migrate) {
-                copyIfExists(oldRoot.resolve("data.mv.db"), newRoot.resolve("data.mv.db"));
-                copyIfExists(oldRoot.resolve("data.trace.db"), newRoot.resolve("data.trace.db"));
-                report.append("已将旧目录中的数据库迁移到新目录。\n");
-            } else {
-                report.append("已跳过迁移：新目录将作为全新数据开始，旧目录文件保留不动。\n");
+            if (choice.isEmpty() || choice.get() == cancel) {
+                return null;
             }
-        } else {
-            report.append("新目录为空，重启后将在新目录自动初始化数据库。\n");
+            if (choice.get() == keepTarget) {
+                DataLocation.saveDataRoot(targetRoot);
+                return "已选择保留目标位置数据，当前数据未迁移。\n"
+                        + "设置已保存：重启后将直接使用目标位置已有数据。\n\n目标位置：" + targetRoot;
+            }
+            // 覆盖：先把目标原数据移动到备份目录（逐文件移动，中途失败立即恢复已备份文件）
+            DatabaseConfig.closeDataSource();
+            Path backupDir = targetRoot.resolve("backup_"
+                    + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss")));
+            Files.createDirectories(backupDir);
+            try {
+                for (String name : DATA_FILE_NAMES) {
+                    Path src = targetRoot.resolve(name);
+                    if (Files.exists(src)) {
+                        Files.move(src, backupDir.resolve(name), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                    }
+                }
+            } catch (IOException ex) {
+                for (String name : DATA_FILE_NAMES) {
+                    Path backed = backupDir.resolve(name);
+                    if (Files.exists(backed)) {
+                        Files.move(backed, targetRoot.resolve(name), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                    }
+                }
+                throw new IOException("备份目标位置原数据失败，未做任何修改（数据库连接已关闭，请重启应用后再试）。原因：" + ex.getMessage(), ex);
+            }
+            try {
+                migrateDataFiles(sourceRoot, targetRoot);
+                DataLocation.saveDataRoot(targetRoot);
+                return "已用当前数据覆盖目标位置数据，并保留以下备份可随时恢复：\n" + backupDir + "\n\n"
+                        + "设置已保存。请完全退出并重新启动糖伴SugarPal，之后所有数据读写将使用：\n" + targetRoot;
+            } catch (IOException ex) {
+                rollbackMigrate(targetRoot, backupDir);
+                throw new IOException("迁移到目标位置失败，已回滚并恢复目标原数据。"
+                        + "当前数据仍在：" + sourceRoot + "。原因：" + ex.getMessage()
+                        + "（数据库连接已关闭，请重启应用后再试）", ex);
+            }
         }
 
-        if (oldHasConfig && !newHasConfig) {
-            copyIfExists(oldRoot.resolve("config.properties"), newRoot.resolve("config.properties"));
-            report.append("AI 建议配置已一并迁移到新目录。\n");
+        // 常规迁移：源有数据、目标为空
+        DatabaseConfig.closeDataSource();
+        try {
+            migrateDataFiles(sourceRoot, targetRoot);
+        } catch (IOException ex) {
+            rollbackMigrate(targetRoot, null);
+            throw new IOException("迁移失败，已清理目标位置已复制的文件，当前数据未受影响（仍在 "
+                    + sourceRoot + "）。原因：" + ex.getMessage()
+                    + "（数据库连接已关闭，请重启应用后再试）", ex);
         }
-
-        DataLocation.saveDataRoot(newRoot);
+        DataLocation.saveDataRoot(targetRoot);
+        StringBuilder report = new StringBuilder("已将当前数据完整迁移到新位置：\n");
+        for (String name : DATA_FILE_NAMES) {
+            if (Files.exists(targetRoot.resolve(name))) {
+                report.append("· ").append(name).append("\n");
+            }
+        }
         report.append("\n设置已保存。请完全退出并重新启动糖伴SugarPal，之后所有数据读写（血糖记录、用餐时间、日历、导出等）将使用：\n")
-                .append(newRoot);
+                .append(targetRoot);
         return report.toString();
     }
 
-    /** 若源文件存在则复制到目标；用于数据库与配置文件迁移 */
-    private void copyIfExists(Path src, Path dst) throws IOException {
-        if (Files.exists(src)) {
-            Files.copy(src, dst);
+    /**
+     * 复制全部本应用数据文件（data.mv.db / config.properties 为关键文件，失败即抛出触发回滚；
+     * data.trace.db 为日志文件，复制失败仅跳过不阻断迁移，避免因日志句柄占用导致整个迁移失败）。
+     */
+    private void migrateDataFiles(Path srcRoot, Path dstRoot) throws IOException {
+        for (String name : DATA_FILE_NAMES) {
+            Path src = srcRoot.resolve(name);
+            if (!Files.exists(src)) {
+                continue;
+            }
+            Path dst = dstRoot.resolve(name);
+            boolean critical = name.equals("data.mv.db") || name.equals("config.properties");
+            try {
+                Files.copy(src, dst, java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                        java.nio.file.StandardCopyOption.COPY_ATTRIBUTES);
+            } catch (IOException e) {
+                if (critical) {
+                    throw new IOException("复制 " + name + " 失败: " + e.getMessage(), e);
+                }
+                // data.trace.db 复制失败不阻断：仅为调试日志，可缺失
+            }
+        }
+    }
+
+    /**
+     * 迁移失败回滚：删除本次复制到目标位置的数据文件；若覆盖场景提供了备份目录，
+     * 则同时把备份的目标原数据移回原位，保证目标位置恢复原状。
+     */
+    private void rollbackMigrate(Path dstRoot, Path backupDir) throws IOException {
+        for (String name : DATA_FILE_NAMES) {
+            Path f = dstRoot.resolve(name);
+            if (!Files.exists(f)) {
+                continue;
+            }
+            if (backupDir != null) {
+                Path backup = backupDir.resolve(name);
+                if (Files.exists(backup)) {
+                    Files.deleteIfExists(f);
+                    Files.move(backup, f, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                    continue;
+                }
+            }
+            Files.deleteIfExists(f);
         }
     }
 

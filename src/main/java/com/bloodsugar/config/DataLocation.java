@@ -28,14 +28,44 @@ public final class DataLocation {
     private static final Path DEFAULT_ROOT = Path.of(
             System.getProperty("user.home"), ".bloodsugar");
 
+    /**
+     * 本进程启动时实际绑定的数据根目录。
+     * 在类首次加载时读取 location.properties 并缓存——数据库连接、AI 配置等
+     * 所有运行期数据读写都应基于该目录；运行期内修改 location.properties
+     * （例如通过「数据位置」对话框保存了新位置）只影响下一次启动。
+     */
+    private static final Path STARTUP_ROOT = resolveStartupRoot();
+
+    /** 解析启动绑定数据根目录：读取 location.properties 中的记录，缺失/损坏回退默认目录 */
+    private static Path resolveStartupRoot() {
+        Path root = readRootFromLocationFile();
+        return root != null ? root : DEFAULT_ROOT;
+    }
+
     private DataLocation() {
     }
 
     /**
      * 当前生效的数据根目录。
-     * 每次调用都重新读取 location.properties，保证切换位置重启后立即生效。
+     * 每次调用都重新读取 location.properties，用于展示“保存的选择”；
+     * 运行期真实读写请使用 {@link #getStartupDataRoot()}。
      */
     public static Path getDataRoot() {
+        Path root = readRootFromLocationFile();
+        return root != null ? root : DEFAULT_ROOT;
+    }
+
+    /**
+     * 本进程启动时实际绑定的数据根目录（缓存值）。
+     * 数据库、AI 配置及数据迁移的源目录都必须以它为准，避免运行期内
+     * 修改 location.properties 后读取到尚未生效的“未来位置”。
+     */
+    public static Path getStartupDataRoot() {
+        return STARTUP_ROOT;
+    }
+
+    /** 读取 location.properties 中记录的数据目录；无记录或读失败返回 null */
+    private static Path readRootFromLocationFile() {
         try {
             if (Files.exists(LOCATION_FILE)) {
                 Properties props = new Properties();
@@ -50,7 +80,7 @@ public final class DataLocation {
         } catch (IOException ignored) {
             // 读不到选择记录或损坏时回退默认目录，不阻塞启动
         }
-        return DEFAULT_ROOT;
+        return null;
     }
 
     /** 保存新的数据根目录选择 */

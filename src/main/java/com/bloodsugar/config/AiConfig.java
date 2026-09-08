@@ -20,7 +20,7 @@ public class AiConfig {
     public static final String PROVIDER_DEEPSEEK = "deepseek";
 
     private static Path configFile() {
-        return DataLocation.getDataRoot().resolve("config.properties");
+        return DataLocation.getStartupDataRoot().resolve("config.properties");
     }
 
     private final Properties props = new Properties();

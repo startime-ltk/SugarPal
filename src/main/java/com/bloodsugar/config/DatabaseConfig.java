@@ -20,9 +20,9 @@ public class DatabaseConfig {
     /** H2 数据库文件名（不含后缀），实际生成 data.mv.db */
     private static final String DB_FILE_NAME = "data";
 
-    /** 当前数据根目录，跟随 DataLocation 中保存的用户设置 */
+    /** 当前数据根目录：跟随 DataLocation 中保存的用户设置（启动时绑定，重启生效） */
     private static Path databaseDir() {
-        return DataLocation.getDataRoot();
+        return DataLocation.getStartupDataRoot();
     }
 
     private static String buildDbUrl() {
