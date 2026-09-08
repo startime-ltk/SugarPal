@@ -55,7 +55,7 @@ public class AiSuggestionService {
      *
      * @param records  全部血糖记录（内部取最近 30 条）
      * @param config   配置对象
-     * @param provider 当前模型，AiConfig.PROVIDER_GLM 或 PROVIDER_DEEPSEEK
+     * @param provider 当前模型 provider id（AiConfig.PROVIDER_GLM / DEEPSEEK / QWEN / KIMI / CUSTOM 等）
      * @return 模型返回的建议文本
      */
     public String generateSuggestion(List<BloodSugarRecord> records, AiConfig config, String provider)

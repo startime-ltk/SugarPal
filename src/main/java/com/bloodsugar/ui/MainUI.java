@@ -1186,7 +1186,9 @@ public class MainUI {
         Label modelLb = new Label("模型：");
         modelLb.setTextFill(Color.web(COLOR_TITLE));
         ComboBox<String> modelCombo = new ComboBox<>();
-        modelCombo.getItems().addAll("智谱 GLM-4.6-Flash", "DeepSeek-V4-Flash");
+        for (String pid : AiConfig.getProviderIds()) {
+            modelCombo.getItems().add(AiConfig.displayName(pid));
+        }
         modelCombo.setValue(AiConfig.displayName(aiConfig.getActiveProvider()));
         modelCombo.setStyle("-fx-background-radius: 8; -fx-border-radius: 8; "
                 + "-fx-border-color: " + COLOR_MEAL_BORDER + "; -fx-background-color: #FFFFFF;");
@@ -1220,8 +1222,10 @@ public class MainUI {
 
         // 切换模型时同步 Key 状态提示，并把当前选择保存到配置
         Runnable refreshKeyStatus = () -> {
-            String provider = modelCombo.getValue().startsWith("智谱")
-                    ? AiConfig.PROVIDER_GLM : AiConfig.PROVIDER_DEEPSEEK;
+            String provider = AiConfig.providerIdByDisplay(modelCombo.getValue());
+            if (provider == null) {
+                return;
+            }
             aiConfig.setActiveProvider(provider);
             try {
                 aiConfig.save();
@@ -1236,8 +1240,10 @@ public class MainUI {
         refreshKeyStatus.run();
 
         generateBtn.setOnAction(e -> {
-            String provider = modelCombo.getValue().startsWith("智谱")
-                    ? AiConfig.PROVIDER_GLM : AiConfig.PROVIDER_DEEPSEEK;
+            String provider = AiConfig.providerIdByDisplay(modelCombo.getValue());
+            if (provider == null) {
+                return;
+            }
             generateBtn.setDisable(true);
             resultArea.setText("正在连接 " + AiConfig.displayName(provider) + " 生成建议，请稍候……");
             new Thread(() -> {
@@ -1395,65 +1401,90 @@ public class MainUI {
         dialog.showAndWait();
     }
 
-    // AI 模型设置：两个模型各自的 Key 与接口配置
+    // AI 模型设置：内置各服务商 + 自定义 OpenAI 兼容，每个模型一套接口地址/模型名/API Key
     private void showAiSettingsDialog(Stage owner, AiConfig config) {
         Dialog<ButtonType> dialog = new Dialog<>();
         dialog.initOwner(owner);
         dialog.setTitle("AI 模型设置");
-        dialog.setHeaderText("填写两个模型的 API Key（仅保存在本地配置文件，不会上传）");
+        dialog.setHeaderText("为各模型填写 API Key 与接口配置（Key 仅保存在本地配置文件，不会上传、不写入日志）");
 
-        GridPane grid = new GridPane();
-        grid.setHgap(10);
-        grid.setVgap(10);
-        grid.setPadding(new Insets(16));
+        VBox cards = new VBox(14);
+        cards.setPadding(new Insets(6));
 
-        Label glmTitle = artLabel("智谱 GLM-4.6-Flash", 12);
-        grid.add(glmTitle, 0, 0, 2, 1);
-        grid.add(new Label("接口地址:"), 0, 1);
-        TextField glmUrl = new TextField(config.getBaseUrl(AiConfig.PROVIDER_GLM));
-        glmUrl.setPrefWidth(380);
-        grid.add(glmUrl, 1, 1);
-        grid.add(new Label("模型名:"), 0, 2);
-        TextField glmModel = new TextField(config.getModel(AiConfig.PROVIDER_GLM));
-        grid.add(glmModel, 1, 2);
-        grid.add(new Label("API Key:"), 0, 3);
-        PasswordField glmKey = new PasswordField();
-        glmKey.setText(config.getApiKey(AiConfig.PROVIDER_GLM));
-        glmKey.setPrefWidth(380);
-        grid.add(glmKey, 1, 3);
+        java.util.Map<String, TextField> urlFields = new java.util.HashMap<>();
+        java.util.Map<String, TextField> modelFields = new java.util.HashMap<>();
+        java.util.Map<String, TextField> keyFields = new java.util.HashMap<>();
 
-        Label dsTitle = artLabel("DeepSeek-V4-Flash", 12);
-        grid.add(dsTitle, 0, 5, 2, 1);
-        grid.add(new Label("接口地址:"), 0, 6);
-        TextField dsUrl = new TextField(config.getBaseUrl(AiConfig.PROVIDER_DEEPSEEK));
-        dsUrl.setPrefWidth(380);
-        grid.add(dsUrl, 1, 6);
-        grid.add(new Label("模型名:"), 0, 7);
-        TextField dsModel = new TextField(config.getModel(AiConfig.PROVIDER_DEEPSEEK));
-        grid.add(dsModel, 1, 7);
-        grid.add(new Label("API Key:"), 0, 8);
-        PasswordField dsKey = new PasswordField();
-        dsKey.setText(config.getApiKey(AiConfig.PROVIDER_DEEPSEEK));
-        dsKey.setPrefWidth(380);
-        grid.add(dsKey, 1, 8);
+        for (String pid : AiConfig.getProviderIds()) {
+            GridPane card = new GridPane();
+            card.setHgap(10);
+            card.setVgap(8);
+            card.setPadding(new Insets(14));
+            card.setStyle("-fx-background-color: #FFFFFF; -fx-background-radius: 12; -fx-border-radius: 12; "
+                    + "-fx-border-color: " + COLOR_BORDER + ";");
 
-        Label tip = new Label("提示：也可直接编辑本地配置文件 " + AiConfig.getConfigFile());
+            Label title = artLabel(AiConfig.displayName(pid), 12);
+            card.add(title, 0, 0, 2, 1);
+
+            TextField url = new TextField(config.getBaseUrl(pid));
+            url.setPrefWidth(420);
+            if (url.getText().isBlank()) {
+                url.setPromptText(AiConfig.getDefaultBaseUrl(pid));
+            }
+            card.add(new Label("接口地址:"), 0, 1);
+            card.add(url, 1, 1);
+
+            TextField model = new TextField(config.getModel(pid));
+            if (model.getText().isBlank()) {
+                model.setPromptText(AiConfig.getDefaultModel(pid));
+            }
+            card.add(new Label("模型名:"), 0, 2);
+            card.add(model, 1, 2);
+
+            PasswordField key = new PasswordField();
+            key.setText(config.getApiKey(pid));
+            key.setPrefWidth(420);
+            key.setPromptText("在对应服务商控制台申请后粘贴");
+            card.add(new Label("API Key:"), 0, 3);
+            card.add(key, 1, 3);
+
+            urlFields.put(pid, url);
+            modelFields.put(pid, model);
+            keyFields.put(pid, key);
+            cards.getChildren().add(card);
+        }
+
+        Label tip = new Label("提示：接口地址/模型名留空时自动使用灰字提示的默认值。也可直接编辑本地配置文件 "
+                + AiConfig.getConfigFile());
         tip.setFont(Font.font(11));
         tip.setTextFill(Color.web("#8A8578"));
-        grid.add(tip, 0, 9, 2, 1);
+        tip.setWrapText(true);
+        cards.getChildren().add(tip);
 
-        dialog.getDialogPane().setContent(grid);
+        ScrollPane scroll = new ScrollPane(cards);
+        scroll.setFitToWidth(true);
+        scroll.setPrefViewportHeight(430);
+        scroll.setStyle("-fx-background: transparent; -fx-background-color: transparent;");
+
+        dialog.getDialogPane().setContent(scroll);
         dialog.getDialogPane().getButtonTypes().addAll(ButtonType.OK, ButtonType.CANCEL);
         styleDialogPane(dialog.getDialogPane());
 
         dialog.setResultConverter(btn -> {
-            if (btn != ButtonType.OK) return null;
-            config.setBaseUrl(AiConfig.PROVIDER_GLM, glmUrl.getText().trim());
-            config.setModel(AiConfig.PROVIDER_GLM, glmModel.getText().trim());
-            config.setApiKey(AiConfig.PROVIDER_GLM, glmKey.getText().trim());
-            config.setBaseUrl(AiConfig.PROVIDER_DEEPSEEK, dsUrl.getText().trim());
-            config.setModel(AiConfig.PROVIDER_DEEPSEEK, dsModel.getText().trim());
-            config.setApiKey(AiConfig.PROVIDER_DEEPSEEK, dsKey.getText().trim());
+            if (btn != ButtonType.OK) {
+                return null;
+            }
+            for (String pid : AiConfig.getProviderIds()) {
+                TextField url = urlFields.get(pid);
+                TextField model = modelFields.get(pid);
+                TextField key = keyFields.get(pid);
+                String urlText = url.getText().trim();
+                String modelText = model.getText().trim();
+                String keyText = key.getText().trim();
+                config.setBaseUrl(pid, urlText.isEmpty() ? AiConfig.getDefaultBaseUrl(pid) : urlText);
+                config.setModel(pid, modelText.isEmpty() ? AiConfig.getDefaultModel(pid) : modelText);
+                config.setApiKey(pid, keyText);
+            }
             try {
                 config.save();
                 statusLabel.setText("AI 配置已保存");
