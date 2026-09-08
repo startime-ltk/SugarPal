@@ -12,25 +12,35 @@ import java.sql.Statement;
 
 /**
  * H2 嵌入式数据库连接配置（HikariCP 连接池）。
- * 数据文件放在用户主目录的 .bloodsugar/data 下，免安装。
+ * 数据根目录默认为用户主目录下 .bloodsugar，可在应用内「数据位置」设置中更改；
+ * 数据库文件为 {@code <数据根目录>/data.mv.db}，切换位置后重启应用生效。
  */
 public class DatabaseConfig {
 
-    private static final Path DB_DIR = Path.of(System.getProperty("user.home"), ".bloodsugar");
-    private static final String DB_URL = "jdbc:h2:file:" + DB_DIR.resolve("data").toString().replace('\\', '/')
-            + ";AUTO_SERVER=TRUE;MODE=MySQL";
+    /** H2 数据库文件名（不含后缀），实际生成 data.mv.db */
+    private static final String DB_FILE_NAME = "data";
+
+    /** 当前数据根目录，跟随 DataLocation 中保存的用户设置 */
+    private static Path databaseDir() {
+        return DataLocation.getDataRoot();
+    }
+
+    private static String buildDbUrl() {
+        return "jdbc:h2:file:" + databaseDir().resolve(DB_FILE_NAME).toString().replace('\\', '/')
+                + ";AUTO_SERVER=TRUE;MODE=MySQL";
+    }
 
     private static final HikariDataSource dataSource;
 
     static {
         try {
-            DB_DIR.toFile().mkdirs();
+            databaseDir().toFile().mkdirs();
         } catch (Exception e) {
-            throw new RuntimeException("无法创建数据目录: " + DB_DIR, e);
+            throw new RuntimeException("无法创建数据目录: " + databaseDir(), e);
         }
 
         HikariConfig config = new HikariConfig();
-        config.setJdbcUrl(DB_URL);
+        config.setJdbcUrl(buildDbUrl());
         config.setMaximumPoolSize(5);
         config.setMinimumIdle(2);
         config.setConnectionTimeout(5000);
@@ -96,5 +106,12 @@ public class DatabaseConfig {
 
     public static Connection getConnection() throws SQLException {
         return dataSource.getConnection();
+    }
+
+    /** 关闭连接池并释放数据库文件句柄；切换数据位置前调用，保证迁移文件一致 */
+    public static void closeDataSource() {
+        if (dataSource != null && !dataSource.isClosed()) {
+            dataSource.close();
+        }
     }
 }

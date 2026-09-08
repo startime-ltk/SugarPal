@@ -1,6 +1,8 @@
 package com.bloodsugar.ui;
 
 import com.bloodsugar.config.AiConfig;
+import com.bloodsugar.config.DataLocation;
+import com.bloodsugar.config.DatabaseConfig;
 import com.bloodsugar.model.BloodSugarRecord;
 import com.bloodsugar.service.AiSuggestionService;
 import com.bloodsugar.service.AiSuggestionService.AiException;
@@ -37,10 +39,15 @@ import javafx.scene.shape.Circle;
 import javafx.scene.text.Font;
 import javafx.scene.text.FontWeight;
 import javafx.scene.text.Text;
+import javafx.stage.DirectoryChooser;
 import javafx.stage.FileChooser;
 import javafx.stage.Stage;
 import javafx.util.Duration;
 
+import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.sql.SQLException;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -184,10 +191,14 @@ public class MainUI {
         Button exportBtn = styledButton("导出报告", "#C9B2FF", "#9B6BFF", "#E0D2FF", "#B78DFF", "#7F4FD8", "#CDB4FF");
         exportBtn.setOnAction(e -> showExportDialog(stage));
 
+        // 数据位置设置：查看/修改数据存放目录（重启生效），浅银灰风格区别于功能按钮
+        Button dataLocationBtn = styledButton("数据位置", "#C9CDD6", "#98A1AF", "#E2E6EC", "#B4BBC8", "#667080", "#D2D8E0");
+        dataLocationBtn.setOnAction(e -> showDataLocationDialog(stage));
+
         Button refreshBtn = styledButton("刷新", COLOR_ORANGE_LIGHT, COLOR_ORANGE_DARK, "#FFDDB8", COLOR_ORANGE_LIGHT, "#F08A33", "#FFC48C");
         refreshBtn.setOnAction(e -> refreshAll());
 
-        toolbar.getChildren().addAll(dots, title, spacer, addBtn, calendarBtn, summaryBtn, aiBtn, exportBtn, refreshBtn);
+        toolbar.getChildren().addAll(dots, title, spacer, addBtn, calendarBtn, summaryBtn, aiBtn, exportBtn, dataLocationBtn, refreshBtn);
         return toolbar;
     }
 
@@ -2134,6 +2145,161 @@ public class MainUI {
         return String.format("时间：%s\n数值：%.1f mmol/L\n餐别：%s\n正常区间：%.1f ~ %.1f mmol/L\n状态：%s\n建议：%s",
                 time, sugar, periodSafe, range[0], range[1], status,
                 generateAdvice(sugar, periodSafe));
+    }
+
+    /**
+     * “数据位置”设置对话框：查看/修改数据存放目录。
+     * 规则：新目录为空则下次启动自动初始化；新目录已有本应用数据则直接使用；
+     * 旧目录有数据时提示迁移；保存后需重启应用生效。
+     */
+    private void showDataLocationDialog(Stage owner) {
+        Path current = DataLocation.getDataRoot();
+
+        TextField pathField = new TextField(current.toString());
+        pathField.setPrefColumnCount(42);
+        Button browseBtn = new Button("浏览…");
+        browseBtn.setStyle("-fx-background-color: linear-gradient(to bottom, #C9CDD6, #98A1AF); "
+                + "-fx-text-fill: white; -fx-font-size: 13px; -fx-padding: 8 18; "
+                + "-fx-background-radius: 16; -fx-border-radius: 16; "
+                + "-fx-border-color: #667080; -fx-border-width: 0 0 3 0; -fx-cursor: hand; -fx-font-weight: bold;");
+        browseBtn.setOnAction(e -> {
+            DirectoryChooser chooser = new DirectoryChooser();
+            chooser.setTitle("选择数据存放目录");
+            String typed = pathField.getText() == null ? "" : pathField.getText().trim();
+            if (!typed.isEmpty()) {
+                Path cur = Path.of(typed);
+                if (Files.isDirectory(cur)) {
+                    chooser.setInitialDirectory(cur.toFile());
+                }
+            }
+            File dir = chooser.showDialog(owner);
+            if (dir != null) {
+                pathField.setText(dir.getAbsolutePath());
+            }
+        });
+        HBox picker = new HBox(8, pathField, browseBtn);
+        picker.setAlignment(Pos.CENTER_LEFT);
+        HBox.setHgrow(pathField, Priority.ALWAYS);
+
+        Label hint = new Label("当前数据目录存放本应用的数据库与配置（血糖记录、用餐时间、AI 建议设置等）。\n"
+                + "更换目录：新目录为空则自动创建并初始化；新目录已有本应用数据则直接使用；\n"
+                + "旧目录有数据时会询问是否迁移。保存后需重启应用生效。");
+        hint.setWrapText(true);
+        hint.setTextFill(Color.web(COLOR_TEXT));
+        hint.setStyle("-fx-font-size: 12px;");
+
+        Dialog<ButtonType> dialog = new Dialog<>();
+        dialog.initOwner(owner);
+        dialog.setTitle("数据位置设置");
+        dialog.setHeaderText("选择数据存放位置");
+        DialogPane pane = dialog.getDialogPane();
+        styleDialogPane(pane);
+        pane.getButtonTypes().addAll(ButtonType.OK, ButtonType.CANCEL);
+        VBox content = new VBox(12, picker, hint);
+        content.setPadding(new Insets(8));
+        pane.setContent(content);
+
+        Button ok = (Button) pane.lookupButton(ButtonType.OK);
+        if (ok != null) {
+            ok.setText("保存");
+        }
+
+        Optional<ButtonType> result = dialog.showAndWait();
+        if (result.isEmpty() || result.get() != ButtonType.OK) {
+            return;
+        }
+
+        String newText = pathField.getText() == null ? "" : pathField.getText().trim();
+        if (newText.isEmpty()) {
+            showAlert("请填写或选择要存放数据的文件夹路径。");
+            return;
+        }
+        Path target;
+        try {
+            target = Path.of(newText).toAbsolutePath().normalize();
+        } catch (Exception ex) {
+            showAlert("路径无效：" + newText);
+            return;
+        }
+        if (Files.exists(target) && !Files.isDirectory(target)) {
+            showAlert("目标不是一个文件夹，请重新选择。");
+            return;
+        }
+        if (target.equals(current)) {
+            showAlert("该目录已经是当前数据目录，无需修改。");
+            return;
+        }
+
+        try {
+            String message = applyDataLocationChange(current, target);
+            Alert info = new Alert(Alert.AlertType.INFORMATION);
+            info.initOwner(owner);
+            info.setTitle("数据位置已更新");
+            info.setHeaderText(null);
+            info.setContentText(message);
+            styleDialogPane(info.getDialogPane());
+            info.showAndWait();
+        } catch (Exception ex) {
+            showAlert("设置数据位置失败：" + ex.getMessage());
+        }
+    }
+
+    /**
+     * 执行数据目录切换：关闭连接池 → 必要时迁移数据/配置 → 写入 location.properties。
+     * 完成后提示重启应用，所有数据读写将切到新目录。
+     */
+    private String applyDataLocationChange(Path oldRoot, Path newRoot) throws IOException {
+        boolean oldHasDb = Files.exists(oldRoot.resolve("data.mv.db"));
+        boolean newHasDb = Files.exists(newRoot.resolve("data.mv.db"));
+        boolean oldHasConfig = Files.exists(oldRoot.resolve("config.properties"));
+        boolean newHasConfig = Files.exists(newRoot.resolve("config.properties"));
+
+        // 先关闭连接池释放旧库文件句柄，保证迁移出的文件完整一致
+        DatabaseConfig.closeDataSource();
+        Files.createDirectories(newRoot);
+
+        StringBuilder report = new StringBuilder();
+        if (newHasDb) {
+            // 新目录已有本应用数据库：直接使用该目录数据，绝不覆盖
+            report.append("新目录已存在本应用数据库，将直接使用该目录数据（旧目录文件未改动）。\n");
+        } else if (oldHasDb) {
+            Alert confirm = new Alert(Alert.AlertType.CONFIRMATION);
+            confirm.setTitle("迁移数据");
+            confirm.setHeaderText("检测到旧目录中有数据");
+            confirm.setContentText("是否将旧目录的数据迁移到新目录？\n\n"
+                    + "选择「确定」：复制数据库与配置到新目录，重启后继续使用全部历史记录。\n"
+                    + "选择「取消」：新目录将作为全新数据开始，旧目录文件保留不动。\n\n"
+                    + "旧目录：" + oldRoot + "\n新目录：" + newRoot);
+            styleDialogPane(confirm.getDialogPane());
+            Optional<ButtonType> choice = confirm.showAndWait();
+            boolean migrate = choice.isPresent() && choice.get() == ButtonType.OK;
+            if (migrate) {
+                copyIfExists(oldRoot.resolve("data.mv.db"), newRoot.resolve("data.mv.db"));
+                copyIfExists(oldRoot.resolve("data.trace.db"), newRoot.resolve("data.trace.db"));
+                report.append("已将旧目录中的数据库迁移到新目录。\n");
+            } else {
+                report.append("已跳过迁移：新目录将作为全新数据开始，旧目录文件保留不动。\n");
+            }
+        } else {
+            report.append("新目录为空，重启后将在新目录自动初始化数据库。\n");
+        }
+
+        if (oldHasConfig && !newHasConfig) {
+            copyIfExists(oldRoot.resolve("config.properties"), newRoot.resolve("config.properties"));
+            report.append("AI 建议配置已一并迁移到新目录。\n");
+        }
+
+        DataLocation.saveDataRoot(newRoot);
+        report.append("\n设置已保存。请完全退出并重新启动糖伴SugarPal，之后所有数据读写（血糖记录、用餐时间、日历、导出等）将使用：\n")
+                .append(newRoot);
+        return report.toString();
+    }
+
+    /** 若源文件存在则复制到目标；用于数据库与配置文件迁移 */
+    private void copyIfExists(Path src, Path dst) throws IOException {
+        if (Files.exists(src)) {
+            Files.copy(src, dst);
+        }
     }
 
     private void showAlert(String msg) {
