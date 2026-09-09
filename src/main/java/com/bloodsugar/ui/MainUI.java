@@ -1182,7 +1182,7 @@ public class MainUI {
         VBox box = new VBox(10);
         box.setPadding(new Insets(10));
 
-        // 模型切换：下拉框一键切换智谱 GLM / DeepSeek
+        // 模型切换：下拉框在所有内置服务商与自定义 OpenAI 兼容接口之间切换
         Label modelLb = new Label("模型：");
         modelLb.setTextFill(Color.web(COLOR_TITLE));
         ComboBox<String> modelCombo = new ComboBox<>();
@@ -1257,12 +1257,13 @@ public class MainUI {
                 } catch (AiException ex) {
                     Platform.runLater(() -> {
                         resultArea.clear();
-                        showAlert(ex.getMessage());
+                        showAiFailureDialog(owner, modelCombo, generateBtn, resultArea, provider, ex.getMessage());
                     });
                 } catch (SQLException ex) {
                     Platform.runLater(() -> {
                         resultArea.clear();
-                        showAlert("读取血糖记录失败：" + ex.getMessage());
+                        showAiFailureDialog(owner, modelCombo, generateBtn, resultArea, provider,
+                                "读取血糖记录失败：" + ex.getMessage());
                     });
                 } finally {
                     Platform.runLater(() -> generateBtn.setDisable(false));
@@ -1285,6 +1286,53 @@ public class MainUI {
             closeBtn.setEffect(new DropShadow(4, 2, 3, Color.web("#FFC4D9")));
         }
         dialog.showAndWait();
+    }
+
+    /** 生成失败时给出明确错误与操作入口：重试 / 切换其他已配置模型（无则去设置 API Key）/ 关闭 */
+    private void showAiFailureDialog(Stage owner, ComboBox<String> modelCombo, Button generateBtn,
+                                     TextArea resultArea, String failedProvider, String message) {
+        // 找第一个已配置 Key 的其他 provider 作为回退候选
+        String fallback = null;
+        for (String pid : AiConfig.getProviderIds()) {
+            if (!pid.equals(failedProvider)) {
+                String k = aiConfig.getApiKey(pid);
+                if (k != null && !k.isBlank()) {
+                    fallback = pid;
+                    break;
+                }
+            }
+        }
+
+        Alert alert = new Alert(Alert.AlertType.ERROR);
+        alert.initOwner(owner);
+        alert.setTitle("AI 建议生成失败");
+        alert.setHeaderText(null);
+        alert.setContentText(message + (fallback == null
+                ? "\n\n可在「设置 API Key」中为所选模型填写接口信息后重试，或在上方下拉框切换其它模型。"
+                : "\n\n可重试当前模型，或一键切换为已配置好 Key 的「" + AiConfig.displayName(fallback) + "」。"));
+
+        ButtonType retryType = new ButtonType("重试", ButtonBar.ButtonData.OK_DONE);
+        ButtonType actionType = fallback == null
+                ? new ButtonType("去设置 API Key", ButtonBar.ButtonData.OTHER)
+                : new ButtonType("切换为 " + AiConfig.displayName(fallback), ButtonBar.ButtonData.OTHER);
+        ButtonType closeType = new ButtonType("关闭", ButtonBar.ButtonData.CANCEL_CLOSE);
+        alert.getButtonTypes().addAll(retryType, actionType, closeType);
+        styleDialogPane(alert.getDialogPane());
+
+        Optional<ButtonType> r = alert.showAndWait();
+        if (!r.isPresent() || r.get() == closeType) {
+            return;
+        }
+        if (r.get() == retryType) {
+            generateBtn.fire();
+        } else if (r.get() == actionType) {
+            if (fallback != null) {
+                modelCombo.setValue(AiConfig.displayName(fallback));
+                generateBtn.fire();
+            } else {
+                showAiSettingsDialog(owner, aiConfig);
+            }
+        }
     }
 
     // 导出报告：选择格式（Excel/PDF）和保存位置，导出重要数据到报告文件

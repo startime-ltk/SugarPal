@@ -14,10 +14,11 @@ import java.util.Properties;
  * AI 建议模块的配置管理。
  * 配置文件保存在数据根目录（默认 用户主目录/.bloodsugar）下的 config.properties，
  * 与数据库同目录，跟随「数据位置」设置一起迁移；
- * 内置智谱 GLM / DeepSeek / 通义千问 / Kimi 四个 OpenAI 兼容服务商，
+ * 内置智谱 GLM / DeepSeek / 通义千问 / Kimi / 豆包(火山方舟) 五个 OpenAI 兼容服务商，
  * 并支持「自定义（OpenAI 兼容）」填任意 baseUrl / model / apiKey。
  * 每个 provider 各存一套 baseUrl / model / apiKey，界面上可切换当前使用的模型，
- * Key 由用户在应用内填写，仅保存在本地配置文件，不写死在代码里、不进日志。
+ * Key 由用户在应用内填写，只保存在本地配置文件，不写死在代码里、不进日志；
+ * 落盘前做本地混淆编码（非加密，仅防明文误读），兼容旧版本遗留的明文 Key。
  */
 public class AiConfig {
 
@@ -25,6 +26,7 @@ public class AiConfig {
     public static final String PROVIDER_DEEPSEEK = "deepseek";
     public static final String PROVIDER_QWEN = "qwen";
     public static final String PROVIDER_KIMI = "kimi";
+    public static final String PROVIDER_DOUBAO = "doubao";
     public static final String PROVIDER_CUSTOM = "custom";
 
     /** provider 元数据：id、界面显示名、默认接口地址、默认模型名 */
@@ -51,6 +53,8 @@ public class AiConfig {
                     "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions", "qwen-plus"),
             new ProviderMeta(PROVIDER_KIMI, "Kimi (月之暗面)",
                     "https://api.moonshot.cn/v1/chat/completions", "moonshot-v1-8k"),
+            new ProviderMeta(PROVIDER_DOUBAO, "豆包 (火山方舟)",
+                    "https://ark.cn-beijing.volces.com/api/v3/chat/completions", "doubao-seed-1-6-250615"),
             new ProviderMeta(PROVIDER_CUSTOM, "自定义 OpenAI 兼容", "", ""));
 
     private static Path configFile() {
@@ -58,6 +62,43 @@ public class AiConfig {
     }
 
     private final Properties props = new Properties();
+
+    /** 本地混淆盐：仅用于防止 config.properties 明文直读，不承担真正的安全加密 */
+    private static final byte[] LOCAL_OBFUSCATION = {0x35, 0x5A, 0x13, 0x77, 0x2E, 0x44, 0x61, 0x1C};
+
+    /** 将 API Key 做本地混淆编码后落盘；空值返回空串，不产生 enc 前缀 */
+    private static String encodeKey(String plain) {
+        if (plain == null || plain.isEmpty()) {
+            return "";
+        }
+        byte[] src = plain.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        byte[] out = new byte[src.length];
+        for (int i = 0; i < src.length; i++) {
+            out[i] = (byte) (src[i] ^ LOCAL_OBFUSCATION[i % LOCAL_OBFUSCATION.length]);
+        }
+        return "enc:" + java.util.Base64.getEncoder().encodeToString(out);
+    }
+
+    /** 读取时还原明文；兼容旧版本直接存储的明文 Key（不以 enc: 开头则原样返回） */
+    private static String decodeKey(String stored) {
+        if (stored == null || stored.isEmpty()) {
+            return "";
+        }
+        if (!stored.startsWith("enc:")) {
+            return stored;
+        }
+        try {
+            byte[] data = java.util.Base64.getDecoder().decode(stored.substring(4));
+            byte[] out = new byte[data.length];
+            for (int i = 0; i < data.length; i++) {
+                out[i] = (byte) (data[i] ^ LOCAL_OBFUSCATION[i % LOCAL_OBFUSCATION.length]);
+            }
+            return new String(out, java.nio.charset.StandardCharsets.UTF_8);
+        } catch (IllegalArgumentException e) {
+            // 解码失败视为损坏数据，返回空避免崩溃
+            return "";
+        }
+    }
 
     private AiConfig() {
     }
@@ -88,6 +129,9 @@ public class AiConfig {
         cfg.props.putIfAbsent("ai.kimi.baseUrl", "https://api.moonshot.cn/v1/chat/completions");
         cfg.props.putIfAbsent("ai.kimi.model", "moonshot-v1-8k");
         cfg.props.putIfAbsent("ai.kimi.apiKey", "");
+        cfg.props.putIfAbsent("ai.doubao.baseUrl", "https://ark.cn-beijing.volces.com/api/v3/chat/completions");
+        cfg.props.putIfAbsent("ai.doubao.model", "doubao-seed-1-6-250615");
+        cfg.props.putIfAbsent("ai.doubao.apiKey", "");
         cfg.props.putIfAbsent("ai.custom.baseUrl", "");
         cfg.props.putIfAbsent("ai.custom.model", "");
         cfg.props.putIfAbsent("ai.custom.apiKey", "");
@@ -99,6 +143,14 @@ public class AiConfig {
         Path file = configFile();
         try {
             Files.createDirectories(file.getParent());
+            // 迁移旧版本遗留的明文 Key：统一转为本地混淆编码后再落盘
+            for (ProviderMeta m : PROVIDERS) {
+                String key = "ai." + m.id + ".apiKey";
+                String raw = props.getProperty(key, "");
+                if (!raw.isEmpty() && !raw.startsWith("enc:")) {
+                    props.setProperty(key, encodeKey(raw));
+                }
+            }
             try (OutputStream out = Files.newOutputStream(file)) {
                 props.store(out, "Blood Sugar AI config. Keys are stored locally only.");
             }
@@ -201,10 +253,10 @@ public class AiConfig {
     }
 
     public String getApiKey(String provider) {
-        return props.getProperty("ai." + provider + ".apiKey", "");
+        return decodeKey(props.getProperty("ai." + provider + ".apiKey", ""));
     }
 
     public void setApiKey(String provider, String value) {
-        props.setProperty("ai." + provider + ".apiKey", value);
+        props.setProperty("ai." + provider + ".apiKey", encodeKey(value));
     }
 }
