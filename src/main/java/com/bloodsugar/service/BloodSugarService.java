@@ -34,6 +34,11 @@ public class BloodSugarService {
         dao.insert(record);
     }
 
+    /** 批量导入专用：直接写入已解析好的记录，保留其餐别/时段，不再重新归类 */
+    public void addImportedRecord(BloodSugarRecord record) throws SQLException {
+        dao.insert(record);
+    }
+
     // 查全部
     public List<BloodSugarRecord> getAllRecords() throws SQLException {
         return dao.findAll();

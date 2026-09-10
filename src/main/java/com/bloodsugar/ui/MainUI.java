@@ -3,10 +3,14 @@ package com.bloodsugar.ui;
 import com.bloodsugar.config.AiConfig;
 import com.bloodsugar.config.DataLocation;
 import com.bloodsugar.config.DatabaseConfig;
+import com.bloodsugar.model.AgpReport;
 import com.bloodsugar.model.BloodSugarRecord;
+import com.bloodsugar.service.AgpPdfExporter;
+import com.bloodsugar.service.AgpReportService;
 import com.bloodsugar.service.AiSuggestionService;
 import com.bloodsugar.service.AiSuggestionService.AiException;
 import com.bloodsugar.service.BloodSugarService;
+import com.bloodsugar.service.CsvImportService;
 import com.bloodsugar.service.ExportService;
 import com.bloodsugar.util.PeriodClassifier;
 
@@ -22,6 +26,8 @@ import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Node;
 import javafx.scene.Scene;
+import javafx.scene.chart.AreaChart;
+import javafx.scene.chart.CategoryAxis;
 import javafx.scene.chart.LineChart;
 import javafx.scene.chart.NumberAxis;
 import javafx.scene.chart.XYChart;
@@ -137,7 +143,7 @@ public class MainUI {
         refreshAll();
         refreshMealPanelFromDb();
         startMealRolloverTimer();
-        Scene scene = new Scene(root, 1150, 720);
+        Scene scene = new Scene(root, 1290, 760);
         // 表格渲染完成后设置表头糖果渐变圆角背景
         Platform.runLater(() -> {
             Node header = table.lookup(".column-header-background");
@@ -185,6 +191,14 @@ public class MainUI {
         Button summaryBtn = styledButton("生成总结", COLOR_BLUE_LIGHT, COLOR_BLUE_DARK, "#B5E7FF", COLOR_BLUE_LIGHT, "#1899E0", "#7FD3FF");
         summaryBtn.setOnAction(e -> showSummaryDialog(stage));
 
+        // AGP 标准化葡萄糖图谱：24 小时分位曲线 + TIR/CV 等指标，可导出 PDF 打印
+        Button agpBtn = styledButton("AGP 报告", "#7DE3E0", "#22B0AE", "#A8EFEC", "#7DE3E0", "#1E8F8F", "#8FE8E4");
+        agpBtn.setOnAction(e -> showAgpDialog(stage));
+
+        // 批量导入：识别血糖仪导出的 CSV / Excel 数据，去重后预览确认写入
+        Button importBtn = styledButton("导入数据", "#FFAFA3", "#FF7A66", "#FFC9C0", "#FFAFA3", "#E5624C", "#FFC0B4");
+        importBtn.setOnAction(e -> showImportDialog(stage));
+
         Button aiBtn = styledButton("AI 建议", "#FF9EC5", "#F36AA9", "#FFC0DB", "#FF9EC5", "#D74F8E", "#FFB9D6");
         aiBtn.setOnAction(e -> showAiDialog(stage));
 
@@ -198,7 +212,8 @@ public class MainUI {
         Button refreshBtn = styledButton("刷新", COLOR_ORANGE_LIGHT, COLOR_ORANGE_DARK, "#FFDDB8", COLOR_ORANGE_LIGHT, "#F08A33", "#FFC48C");
         refreshBtn.setOnAction(e -> refreshAll());
 
-        toolbar.getChildren().addAll(dots, title, spacer, addBtn, calendarBtn, summaryBtn, aiBtn, exportBtn, dataLocationBtn, refreshBtn);
+        toolbar.getChildren().addAll(dots, title, spacer, addBtn, calendarBtn, summaryBtn, agpBtn, importBtn,
+                aiBtn, exportBtn, dataLocationBtn, refreshBtn);
         return toolbar;
     }
 
@@ -2521,6 +2536,450 @@ public class MainUI {
             }
             Files.deleteIfExists(f);
         }
+    }
+
+    // ===================== AGP 标准化葡萄糖图谱报告 =====================
+
+    private final AgpReportService agpService = new AgpReportService();
+    private final CsvImportService csvImportService = new CsvImportService();
+
+    /** AGP 报告：选择范围 → 生成核心指标 + 24h 分位曲线 + 分时段/餐别统计 → 导出 PDF 打印 */
+    private void showAgpDialog(Stage owner) {
+        Dialog<ButtonType> dialog = new Dialog<>();
+        dialog.initOwner(owner);
+        dialog.setTitle("AGP 标准化葡萄糖图谱");
+        dialog.setHeaderText("Ambulatory Glucose Profile · 葡萄糖图谱与达标分析（可导出 PDF 打印）");
+
+        Label rangeLb = new Label("统计范围：");
+        rangeLb.setFont(Font.font("Microsoft YaHei", FontWeight.BOLD, 13));
+        rangeLb.setTextFill(Color.web(COLOR_TITLE));
+
+        ComboBox<String> rangeCombo = new ComboBox<>(FXCollections.observableArrayList("近 7 天", "近 14 天", "近 30 天"));
+        rangeCombo.setValue("近 14 天");
+        rangeCombo.setStyle("-fx-font-size: 13px;");
+
+        Button genBtn = styledButton("生成图谱", COLOR_BLUE_LIGHT, COLOR_BLUE_DARK, "#B5E7FF", COLOR_BLUE_LIGHT, "#1899E0", "#7FD3FF");
+        Button pdfBtn = styledButton("导出 PDF", COLOR_GREEN_LIGHT, COLOR_GREEN_DARK, "#A9F0C4", COLOR_GREEN_LIGHT, "#1E9E50", "#7DE3A4");
+        pdfBtn.setDisable(true);
+
+        HBox topRow = new HBox(10, rangeLb, rangeCombo, genBtn, pdfBtn);
+        topRow.setAlignment(Pos.CENTER_LEFT);
+
+        Label metricLb = new Label("选择统计范围后点击「生成图谱」，将按业务日（凌晨 4 点边界）汇总近 N 天数据。");
+        metricLb.setWrapText(true);
+        metricLb.setFont(Font.font("Microsoft YaHei", 12.5));
+        metricLb.setTextFill(Color.web(COLOR_TEXT));
+        metricLb.setPadding(new Insets(10, 12, 10, 12));
+        metricLb.setMaxWidth(Double.MAX_VALUE);
+        metricLb.setStyle("-fx-background-color: linear-gradient(to right, #FFF6E9, #EAFCF0); "
+                + "-fx-background-radius: 14; -fx-border-color: " + COLOR_BORDER + "; -fx-border-radius: 14;");
+
+        AreaChart<String, Number> agpChart = new AreaChart<>(new CategoryAxis(), new NumberAxis());
+        agpChart.setAnimated(false);
+        agpChart.setCreateSymbols(false);
+        agpChart.setLegendVisible(true);
+        agpChart.setPrefHeight(300);
+        agpChart.setMinHeight(260);
+        agpChart.setStyle("-fx-background-color: transparent; -fx-font-size: 11px;");
+
+        TableView<AgpReport.GroupStat> segTable = buildGroupStatTable();
+        TableView<AgpReport.GroupStat> mealTable = buildGroupStatTable();
+        segTable.setPrefHeight(170);
+        mealTable.setPrefHeight(170);
+        VBox segBox = titledBox("分时段统计（0-6 / 6-12 / 12-18 / 18-24）", segTable);
+        VBox mealBox = titledBox("按餐别统计", mealTable);
+        HBox tableRow = new HBox(12, segBox, mealBox);
+        HBox.setHgrow(segBox, Priority.ALWAYS);
+        HBox.setHgrow(mealBox, Priority.ALWAYS);
+
+        Label footLb = new Label("本报告仅供健康管理参考，不作为医疗诊断依据。");
+        footLb.setFont(Font.font("Microsoft YaHei", 11));
+        footLb.setTextFill(Color.web("#8A8578"));
+
+        final AgpReport[] holder = new AgpReport[1];
+
+        genBtn.setOnAction(e -> {
+            String v = rangeCombo.getValue() == null ? "" : rangeCombo.getValue();
+            int days = v.contains("7") ? 7 : v.contains("30") ? 30 : 14;
+            try {
+                AgpReport report = agpService.build(days);
+                holder[0] = report;
+                if (report.recordCount == 0) {
+                    metricLb.setText("所选范围内暂无血糖记录，请先添加记录或通过「导入数据」批量导入。");
+                    agpChart.getData().clear();
+                    segTable.setItems(FXCollections.observableArrayList());
+                    mealTable.setItems(FXCollections.observableArrayList());
+                    pdfBtn.setDisable(true);
+                    return;
+                }
+                metricLb.setText(agpMetricText(report));
+                renderAgpChart(agpChart, report);
+                segTable.setItems(FXCollections.observableArrayList(report.timeSegments));
+                mealTable.setItems(FXCollections.observableArrayList(report.mealGroups));
+                pdfBtn.setDisable(false);
+            } catch (SQLException ex) {
+                showAlert("生成 AGP 报告失败：" + ex.getMessage());
+            }
+        });
+
+        pdfBtn.setOnAction(e -> {
+            AgpReport report = holder[0];
+            if (report == null || report.recordCount == 0) return;
+            FileChooser chooser = new FileChooser();
+            chooser.setTitle("导出 AGP 报告 PDF");
+            String stamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"));
+            chooser.setInitialFileName("糖伴SugarPal-AGP葡萄糖图谱_" + stamp + ".pdf");
+            chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter("PDF 文件 (*.pdf)", "*.pdf"));
+            File target = chooser.showSaveDialog(owner);
+            if (target == null) return;
+            pdfBtn.setDisable(true);
+            pdfBtn.setText("正在导出…");
+            new Thread(() -> {
+                try {
+                    new AgpPdfExporter().export(report, target.getAbsolutePath());
+                    Platform.runLater(() -> {
+                        Alert ok = new Alert(Alert.AlertType.INFORMATION);
+                        ok.initOwner(owner);
+                        ok.setTitle("导出成功");
+                        ok.setHeaderText("AGP 报告已导出");
+                        ok.setContentText("文件已保存到：\n" + target.getAbsolutePath()
+                                + "\n\n可直接打开打印，页脚已注明「本报告仅供健康管理参考，不作为医疗诊断依据」。");
+                        styleDialogPane(ok.getDialogPane());
+                        ok.showAndWait();
+                    });
+                } catch (Exception ex) {
+                    Platform.runLater(() -> showAlert("导出失败：" + ex.getMessage()));
+                } finally {
+                    Platform.runLater(() -> {
+                        pdfBtn.setDisable(false);
+                        pdfBtn.setText("导出 PDF");
+                    });
+                }
+            }).start();
+        });
+
+        VBox box = new VBox(10, topRow, metricLb, agpChart, tableRow, footLb);
+        box.setPadding(new Insets(12));
+        box.setPrefWidth(900);
+
+        dialog.getDialogPane().setContent(box);
+        ButtonType closeType = new ButtonType("关闭", ButtonBar.ButtonData.CANCEL_CLOSE);
+        dialog.getDialogPane().getButtonTypes().add(closeType);
+        styleDialogPane(dialog.getDialogPane());
+        Button closeBtn = (Button) dialog.getDialogPane().lookupButton(closeType);
+        if (closeBtn != null) stylePinkCloseButton(closeBtn);
+        dialog.showAndWait();
+    }
+
+    /** AGP 核心指标文本 */
+    private String agpMetricText(AgpReport r) {
+        StringBuilder sb = new StringBuilder();
+        sb.append(String.format("平均血糖 %.1f mmol/L　标准差 SD %.2f　变异系数 CV %.1f%%　估算 HbA1c %.1f%%",
+                r.mean, r.sd, r.cv, r.hba1c));
+        sb.append(String.format("%nTIR 达标 %.1f%%　TAR 偏高 %.1f%%　TBR 偏低 %.1f%%（按各自时段正常区间逐条判定）",
+                r.tir, r.tar, r.tbr));
+        sb.append(String.format("%n记录 %d 条　覆盖 %d 个业务日　范围 %s ~ %s　最低 %.1f / 最高 %.1f mmol/L",
+                r.recordCount, r.dayCount, r.startDate, r.endDate, r.minValue, r.maxValue));
+        return sb.toString();
+    }
+
+    /** 绘制 AGP 24 小时分位曲线：25%~75% 分位带 + 中位数 + 目标上下限参考线 */
+    private void renderAgpChart(AreaChart<String, Number> chart, AgpReport report) {
+        chart.getData().clear();
+
+        double top = Math.max(report.targetHighMax, report.maxValue);
+        double yMax = Math.ceil(top + 1.0);
+        if (yMax < 10) yMax = 10;
+        NumberAxis yA = (NumberAxis) chart.getYAxis();
+        yA.setAutoRanging(false);
+        yA.setLowerBound(0);
+        yA.setUpperBound(yMax);
+        yA.setTickUnit(yMax <= 12 ? 2 : Math.ceil(yMax / 6));
+        yA.setLabel("mmol/L");
+        CategoryAxis xA = (CategoryAxis) chart.getXAxis();
+        xA.setLabel("时间（小时）");
+
+        String[] labels = new String[24];
+        for (int i = 0; i < 24; i++) labels[i] = String.format("%02d:00", i);
+
+        double[] p25 = new double[24], p50 = new double[24], p75 = new double[24];
+        Arrays.fill(p25, Double.NaN);
+        Arrays.fill(p50, Double.NaN);
+        Arrays.fill(p75, Double.NaN);
+        for (AgpReport.CurvePoint p : report.curve) {
+            if (p.hour >= 0 && p.hour < 24) {
+                p25[p.hour] = p.p25;
+                p50[p.hour] = p.p50;
+                p75[p.hour] = p.p75;
+            }
+        }
+        interpolateHours(p25);
+        interpolateHours(p50);
+        interpolateHours(p75);
+
+        XYChart.Series<String, Number> band = new XYChart.Series<>();
+        band.setName("25%~75% 分位带");
+        XYChart.Series<String, Number> bandBase = new XYChart.Series<>();
+        bandBase.setName(" ");
+        XYChart.Series<String, Number> median = new XYChart.Series<>();
+        median.setName("中位数 P50");
+        XYChart.Series<String, Number> up = new XYChart.Series<>();
+        up.setName(String.format("目标上限 %.1f", report.targetHighMax));
+        XYChart.Series<String, Number> low = new XYChart.Series<>();
+        low.setName(String.format("目标下限 %.1f", report.targetLow));
+
+        for (int i = 0; i < 24; i++) {
+            band.getData().add(new XYChart.Data<>(labels[i], p75[i]));
+            bandBase.getData().add(new XYChart.Data<>(labels[i], p25[i]));
+            median.getData().add(new XYChart.Data<>(labels[i], p50[i]));
+            up.getData().add(new XYChart.Data<>(labels[i], report.targetHighMax));
+            low.getData().add(new XYChart.Data<>(labels[i], report.targetLow));
+        }
+        // 顺序即层级：先画 P75 色带，再用与绘图区同色的 P25 遮盖出下沿，从而形成 25%~75% 色带
+        chart.getData().addAll(band, bandBase, median, up, low);
+
+        Platform.runLater(() -> {
+            Node bg = chart.lookup(".chart-plot-background");
+            if (bg != null) bg.setStyle("-fx-background-color: #FFFDF6;");
+        });
+        applyWhenSeriesNodeReady(band, n -> styleAreaSeriesNode(n, "rgba(59, 201, 110, 0.42)", null, 0));
+        applyWhenSeriesNodeReady(bandBase, n -> styleAreaSeriesNode(n, "#FFFDF6", null, 0));
+        applyWhenSeriesNodeReady(median, n -> styleAreaSeriesNode(n, "rgba(0, 0, 0, 0)", "#12A35C", 2.4));
+        applyWhenSeriesNodeReady(up, n -> styleAreaSeriesNode(n, "rgba(0, 0, 0, 0)", "#FF8A65", 1.4));
+        applyWhenSeriesNodeReady(low, n -> styleAreaSeriesNode(n, "rgba(0, 0, 0, 0)", "#3FB8FF", 1.4));
+    }
+
+    /** AreaChart 系列样式：填充色 + 线条色/线宽（stroke 为 null 时不动线条） */
+    private void styleAreaSeriesNode(Node seriesNode, String fill, String stroke, double width) {
+        Node f = seriesNode.lookup(".chart-series-area-fill");
+        Node l = seriesNode.lookup(".chart-series-area-line");
+        if (f != null) f.setStyle("-fx-fill: " + fill + ";");
+        if (l != null && stroke != null) l.setStyle("-fx-stroke: " + stroke + "; -fx-stroke-width: " + width + ";");
+    }
+
+    /** 无数据的整点用相邻有效值线性插值补齐，避免曲线断裂（AGP 标准做法） */
+    private void interpolateHours(double[] arr) {
+        int n = arr.length, first = -1, last = -1;
+        for (int i = 0; i < n; i++) {
+            if (!Double.isNaN(arr[i])) {
+                first = i;
+                break;
+            }
+        }
+        if (first < 0) return;
+        for (int i = n - 1; i >= 0; i--) {
+            if (!Double.isNaN(arr[i])) {
+                last = i;
+                break;
+            }
+        }
+        for (int i = 0; i < first; i++) arr[i] = arr[first];
+        for (int i = last + 1; i < n; i++) arr[i] = arr[last];
+        int prev = first;
+        for (int i = first + 1; i <= last; i++) {
+            if (Double.isNaN(arr[i])) continue;
+            if (i - prev > 1) {
+                double step = (arr[i] - arr[prev]) / (i - prev);
+                for (int k = prev + 1; k < i; k++) arr[k] = arr[prev] + step * (k - prev);
+            }
+            prev = i;
+        }
+    }
+
+    private TableView<AgpReport.GroupStat> buildGroupStatTable() {
+        TableView<AgpReport.GroupStat> t = new TableView<>();
+        t.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY);
+        t.setPlaceholder(new Label("暂无数据"));
+        t.setStyle("-fx-background-color: white; -fx-background-radius: 12; -fx-font-size: 12px;");
+        t.getColumns().add(strCol("分组", 130, cd -> cd.getValue().name));
+        t.getColumns().add(strCol("条数", 60, cd -> String.valueOf(cd.getValue().count)));
+        t.getColumns().add(strCol("平均", 70, cd -> cd.getValue().count == 0 ? "-" : String.format("%.1f", cd.getValue().avg)));
+        t.getColumns().add(strCol("最高", 70, cd -> cd.getValue().count == 0 ? "-" : String.format("%.1f", cd.getValue().max)));
+        t.getColumns().add(strCol("最低", 70, cd -> cd.getValue().count == 0 ? "-" : String.format("%.1f", cd.getValue().min)));
+        t.getColumns().add(strCol("达标率", 80, cd -> cd.getValue().count == 0 ? "-" : String.format("%.0f%%", cd.getValue().tirPercent)));
+        return t;
+    }
+
+    private TableColumn<AgpReport.GroupStat, String> strCol(String title, double w,
+            java.util.function.Function<TableColumn.CellDataFeatures<AgpReport.GroupStat, String>, String> f) {
+        TableColumn<AgpReport.GroupStat, String> c = new TableColumn<>(title);
+        c.setPrefWidth(w);
+        c.setCellValueFactory(cd -> new javafx.beans.property.SimpleStringProperty(f.apply(cd)));
+        return c;
+    }
+
+    private VBox titledBox(String title, Node content) {
+        Label lb = artLabel(title, 13);
+        VBox v = new VBox(6, lb, content);
+        VBox.setVgrow(content, Priority.ALWAYS);
+        v.setMaxWidth(Double.MAX_VALUE);
+        return v;
+    }
+
+    /** 关闭按钮：粉色糖果样式（与其它对话框保持一致） */
+    private void stylePinkCloseButton(Button b) {
+        b.setStyle("-fx-background-color: linear-gradient(to bottom, #FFD3E2, #FFA8C5); "
+                + "-fx-text-fill: #8C3B52; -fx-font-size: 13px; -fx-padding: 8 20; "
+                + "-fx-background-radius: 18; -fx-border-radius: 18; "
+                + "-fx-border-color: #E87FA5; -fx-border-width: 0 0 3 0; "
+                + "-fx-cursor: hand; -fx-font-weight: bold;");
+        b.setEffect(new DropShadow(4, 2, 3, Color.web("#FFC4D9")));
+    }
+
+    // ===================== 血糖仪 CSV / Excel 批量导入 =====================
+
+    /** 导入数据：选择文件 → 自动识别列与日期格式 → 预览去重结果 → 确认写入 */
+    private void showImportDialog(Stage owner) {
+        Dialog<ButtonType> dialog = new Dialog<>();
+        dialog.initOwner(owner);
+        dialog.setTitle("导入血糖数据");
+        dialog.setHeaderText("批量导入血糖仪数据（CSV / Excel），自动识别列名、兼容多种日期格式并去重");
+
+        Label fileLb = new Label("尚未选择文件");
+        fileLb.setFont(Font.font("Microsoft YaHei", 12));
+        fileLb.setTextFill(Color.web(COLOR_TEXT));
+
+        Button pickBtn = styledButton("选择文件", COLOR_BLUE_LIGHT, COLOR_BLUE_DARK, "#B5E7FF", COLOR_BLUE_LIGHT, "#1899E0", "#7FD3FF");
+        Button tplBtn = styledButton("下载导入模板", "#C9B2FF", "#9B6BFF", "#E0D2FF", "#B78DFF", "#7F4FD8", "#CDB4FF");
+        HBox btnRow = new HBox(10, pickBtn, tplBtn);
+        btnRow.setAlignment(Pos.CENTER_LEFT);
+
+        Label tipLb = new Label("支持 .csv / .txt / .xlsx / .xls；可识别 时间/日期时间/血糖/数值/血糖值/餐别/备注 等列名（兼容英文），"
+                + "兼容 yyyy-MM-dd HH:mm、yyyy/MM/dd HH:mm、yyyy-MM-dd 等格式；同一时间+数值的重复记录自动跳过。");
+        tipLb.setWrapText(true);
+        tipLb.setFont(Font.font("Microsoft YaHei", 11.5));
+        tipLb.setTextFill(Color.web("#8A8578"));
+
+        TableView<CsvImportService.PreviewRow> previewTable = buildImportPreviewTable();
+
+        Label sumLb = new Label("请选择文件以解析并预览");
+        sumLb.setWrapText(true);
+        sumLb.setFont(Font.font("Microsoft YaHei", 12.5));
+        sumLb.setTextFill(Color.web(COLOR_TEXT));
+        sumLb.setPadding(new Insets(10, 12, 10, 12));
+        sumLb.setMaxWidth(Double.MAX_VALUE);
+        sumLb.setStyle("-fx-background-color: linear-gradient(to right, #FFF6E9, #EAFCF0); "
+                + "-fx-background-radius: 14; -fx-border-color: " + COLOR_BORDER + "; -fx-border-radius: 14;");
+
+        Button importBtn = styledButton("确认导入", COLOR_GREEN_LIGHT, COLOR_GREEN_DARK, "#A9F0C4", COLOR_GREEN_LIGHT, "#1E9E50", "#7DE3A4");
+        importBtn.setDisable(true);
+        HBox actionRow = new HBox(10, importBtn);
+        actionRow.setAlignment(Pos.CENTER_LEFT);
+
+        final CsvImportService.ImportPreview[] holder = new CsvImportService.ImportPreview[1];
+
+        pickBtn.setOnAction(e -> {
+            FileChooser chooser = new FileChooser();
+            chooser.setTitle("选择要导入的血糖数据文件");
+            chooser.getExtensionFilters().addAll(
+                    new FileChooser.ExtensionFilter("CSV / Excel 文件 (*.csv, *.txt, *.xlsx, *.xls)",
+                            "*.csv", "*.txt", "*.xlsx", "*.xls"),
+                    new FileChooser.ExtensionFilter("所有文件", "*.*"));
+            File f = chooser.showOpenDialog(owner);
+            if (f == null) return;
+            try {
+                CsvImportService.ImportPreview p = csvImportService.preview(f);
+                holder[0] = p;
+                fileLb.setText("已选择：" + f.getAbsolutePath());
+                int show = Math.min(50, p.rows.size());
+                previewTable.setItems(FXCollections.observableArrayList(p.rows.subList(0, show)));
+                StringBuilder sb = new StringBuilder(p.mapping.describe());
+                if (!p.warning.isBlank()) sb.append("　注意：").append(p.warning);
+                sumLb.setText(sb.toString() + "\n" + CsvImportService.summaryText(p)
+                        + "（预览显示前 " + show + " 行）");
+                importBtn.setDisable(p.importable == 0);
+            } catch (Exception ex) {
+                holder[0] = null;
+                importBtn.setDisable(true);
+                previewTable.setItems(FXCollections.observableArrayList());
+                sumLb.setText("解析失败，请确认文件格式后重试。");
+                showAlert("解析失败：" + ex.getMessage());
+            }
+        });
+
+        tplBtn.setOnAction(e -> {
+            FileChooser chooser = new FileChooser();
+            chooser.setTitle("保存导入模板");
+            chooser.setInitialFileName("糖伴SugarPal-血糖导入模板.csv");
+            chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter("CSV 文件 (*.csv)", "*.csv"));
+            File f = chooser.showSaveDialog(owner);
+            if (f == null) return;
+            try {
+                csvImportService.writeTemplate(f);
+                Alert ok = new Alert(Alert.AlertType.INFORMATION);
+                ok.initOwner(owner);
+                ok.setTitle("模板已生成");
+                ok.setHeaderText("导入模板已保存");
+                ok.setContentText("文件已保存到：\n" + f.getAbsolutePath()
+                        + "\n\n表头为「时间,血糖值(mmol/L),餐别,备注」，按示例填写后即可用「选择文件」导入。");
+                styleDialogPane(ok.getDialogPane());
+                ok.showAndWait();
+            } catch (IOException ex) {
+                showAlert("模板保存失败：" + ex.getMessage());
+            }
+        });
+
+        importBtn.setOnAction(e -> {
+            CsvImportService.ImportPreview p = holder[0];
+            if (p == null || p.importable == 0) return;
+            CsvImportService.ImportSummary s = csvImportService.doImport(p);
+            Alert ok = new Alert(Alert.AlertType.INFORMATION);
+            ok.initOwner(owner);
+            ok.setTitle("导入完成");
+            ok.setHeaderText("血糖数据导入结果");
+            StringBuilder sb = new StringBuilder(CsvImportService.resultText(s));
+            sb.append("\n重复跳过（文件内 ").append(p.dupInFile).append(" 条 / 已有记录 ")
+                    .append(p.dupInDb).append(" 条），格式错误 ").append(p.invalid).append(" 条。");
+            sb.append("\n导入的记录已按业务日（凌晨 4 点边界）归入表格、趋势曲线、日历与统计。");
+            if (!s.failures.isEmpty()) {
+                sb.append("\n\n失败明细（最多显示 10 条）：");
+                for (int i = 0; i < Math.min(10, s.failures.size()); i++) {
+                    sb.append("\n- ").append(s.failures.get(i));
+                }
+            }
+            ok.setContentText(sb.toString());
+            styleDialogPane(ok.getDialogPane());
+            ok.showAndWait();
+            importBtn.setDisable(true);
+            dialog.close();
+            refreshAll();
+        });
+
+        VBox box = new VBox(10, btnRow, fileLb, tipLb, sumLb, previewTable, actionRow);
+        box.setPadding(new Insets(12));
+        box.setPrefWidth(880);
+        previewTable.setPrefHeight(300);
+
+        dialog.getDialogPane().setContent(box);
+        ButtonType closeType = new ButtonType("关闭", ButtonBar.ButtonData.CANCEL_CLOSE);
+        dialog.getDialogPane().getButtonTypes().add(closeType);
+        styleDialogPane(dialog.getDialogPane());
+        Button closeBtn = (Button) dialog.getDialogPane().lookupButton(closeType);
+        if (closeBtn != null) stylePinkCloseButton(closeBtn);
+        dialog.showAndWait();
+    }
+
+    private TableView<CsvImportService.PreviewRow> buildImportPreviewTable() {
+        TableView<CsvImportService.PreviewRow> t = new TableView<>();
+        t.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY);
+        t.setPlaceholder(new Label("请选择文件进行解析预览"));
+        t.setStyle("-fx-background-color: white; -fx-background-radius: 12; -fx-font-size: 12px;");
+        t.getColumns().add(impCol("行号", 55, r -> String.valueOf(r.lineNo)));
+        t.getColumns().add(impCol("时间", 150, r -> r.displayTime()));
+        t.getColumns().add(impCol("血糖(mmol/L)", 95, r -> r.bloodSugar > 0 ? String.format("%.1f", r.bloodSugar) : "-"));
+        t.getColumns().add(impCol("餐别", 80, r -> r.mealPeriod == null ? "" : r.mealPeriod));
+        t.getColumns().add(impCol("备注", 110, r -> r.note == null ? "" : r.note));
+        t.getColumns().add(impCol("状态", 240, r ->
+                (r.message == null || r.message.isEmpty()) ? r.status : r.status + " · " + r.message));
+        return t;
+    }
+
+    private TableColumn<CsvImportService.PreviewRow, String> impCol(String title, double w,
+            java.util.function.Function<CsvImportService.PreviewRow, String> f) {
+        TableColumn<CsvImportService.PreviewRow, String> c = new TableColumn<>(title);
+        c.setPrefWidth(w);
+        c.setCellValueFactory(cd -> new javafx.beans.property.SimpleStringProperty(f.apply(cd.getValue())));
+        return c;
     }
 
     private void showAlert(String msg) {

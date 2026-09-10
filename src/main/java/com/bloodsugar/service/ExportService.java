@@ -437,8 +437,8 @@ public class ExportService {
         table.addCell(c);
     }
 
-    /** 找到系统中文字体并嵌入，避免 PDF 中文乱码 */
-    private BaseFont loadChineseBaseFont() throws Exception {
+    /** 找到系统中文字体并嵌入，避免 PDF 中文乱码（供本类与 AGP 报告导出复用） */
+    public static BaseFont loadChineseBaseFont() throws Exception {
         for (String candidate : FONT_CANDIDATES) {
             String path = candidate.contains(",") ? candidate.substring(0, candidate.indexOf(',')) : candidate;
             if (new File(path).exists()) {
