@@ -1,6 +1,7 @@
 package com.bloodsugar.ui;
 
 import com.bloodsugar.config.AiConfig;
+import com.bloodsugar.config.AlarmConfig;
 import com.bloodsugar.config.DataLocation;
 import com.bloodsugar.config.DatabaseConfig;
 import com.bloodsugar.model.AgpReport;
@@ -9,9 +10,12 @@ import com.bloodsugar.service.AgpPdfExporter;
 import com.bloodsugar.service.AgpReportService;
 import com.bloodsugar.service.AiSuggestionService;
 import com.bloodsugar.service.AiSuggestionService.AiException;
+import com.bloodsugar.service.AlarmService;
 import com.bloodsugar.service.BloodSugarService;
 import com.bloodsugar.service.CsvImportService;
 import com.bloodsugar.service.ExportService;
+import com.bloodsugar.service.HealthSummaryPdfExporter;
+import com.bloodsugar.service.HealthSummaryService;
 import com.bloodsugar.util.PeriodClassifier;
 
 import javafx.animation.Animation;
@@ -50,6 +54,7 @@ import javafx.stage.FileChooser;
 import javafx.stage.Stage;
 import javafx.util.Duration;
 
+import java.awt.Desktop;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -195,6 +200,10 @@ public class MainUI {
         Button agpBtn = styledButton("AGP 报告", "#7DE3E0", "#22B0AE", "#A8EFEC", "#7DE3E0", "#1E8F8F", "#8FE8E4");
         agpBtn.setOnAction(e -> showAgpDialog(stage));
 
+        // P0-2 分享摘要：近 30 天健康摘要 PDF，系统方式打开后可经邮件/微信等分享给家人
+        Button shareSummaryBtn = styledButton("分享摘要", "#FFC48C", "#F58B36", "#FFDDB8", "#FFC48C", "#E07A2A", "#FFC48C");
+        shareSummaryBtn.setOnAction(e -> showHealthSummaryDialog(stage));
+
         // 批量导入：识别血糖仪导出的 CSV / Excel 数据，去重后预览确认写入
         Button importBtn = styledButton("导入数据", "#FFAFA3", "#FF7A66", "#FFC9C0", "#FFAFA3", "#E5624C", "#FFC0B4");
         importBtn.setOnAction(e -> showImportDialog(stage));
@@ -212,8 +221,8 @@ public class MainUI {
         Button refreshBtn = styledButton("刷新", COLOR_ORANGE_LIGHT, COLOR_ORANGE_DARK, "#FFDDB8", COLOR_ORANGE_LIGHT, "#F08A33", "#FFC48C");
         refreshBtn.setOnAction(e -> refreshAll());
 
-        toolbar.getChildren().addAll(dots, title, spacer, addBtn, calendarBtn, summaryBtn, agpBtn, importBtn,
-                aiBtn, exportBtn, dataLocationBtn, refreshBtn);
+        toolbar.getChildren().addAll(dots, title, spacer, addBtn, calendarBtn, summaryBtn, agpBtn, shareSummaryBtn,
+                importBtn, aiBtn, exportBtn, dataLocationBtn, refreshBtn);
         return toolbar;
     }
 
@@ -1142,8 +1151,16 @@ public class MainUI {
                         hInsulin, hCarbs, hActivity, hWeight, hPulse, hBp);
                 refreshAll();
 
-                String period = com.bloodsugar.util.PeriodClassifier.classify(recordTime, mealTime);
-                showAdviceDialog(owner, bloodSugar, period);
+                // P0-1 异常报警：超阈值（默认低 3.9 / 高 13.9，可配置）立即弹窗提醒
+                String alarmMsg = AlarmService.describe(bloodSugar);
+                if (alarmMsg != null) {
+                    String alarmTitle = AlarmService.evaluate(bloodSugar) == AlarmService.Level.LOW
+                            ? "低血糖提醒" : "高血糖提醒";
+                    showAlarmAlert(owner, alarmTitle, alarmMsg);
+                } else {
+                    String period = com.bloodsugar.util.PeriodClassifier.classify(recordTime, mealTime);
+                    showAdviceDialog(owner, bloodSugar, period);
+                }
                 return btn;
             } catch (Exception ex) {
                 showAlert("输入格式有误：" + ex.getMessage());
@@ -2930,6 +2947,18 @@ public class MainUI {
             StringBuilder sb = new StringBuilder(CsvImportService.resultText(s));
             sb.append("\n重复跳过（文件内 ").append(p.dupInFile).append(" 条 / 已有记录 ")
                     .append(p.dupInDb).append(" 条），格式错误 ").append(p.invalid).append(" 条。");
+            // P0-1 异常报警：导入数据中超出报警阈值的记录数汇总提示
+            int alarmCount = 0;
+            for (CsvImportService.PreviewRow row : p.rows) {
+                if ("可导入".equals(row.status) && AlarmService.isAlarm(row.bloodSugar)) {
+                    alarmCount++;
+                }
+            }
+            if (alarmCount > 0) {
+                sb.append("\n⚠ 本次导入含 ").append(alarmCount).append(" 条超出报警阈值（<")
+                        .append(String.format("%.1f", AlarmConfig.getLow())).append(" 或 >")
+                        .append(String.format("%.1f", AlarmConfig.getHigh())).append(" mmol/L），请在表格与趋势中重点关注。");
+            }
             sb.append("\n导入的记录已按业务日（凌晨 4 点边界）归入表格、趋势曲线、日历与统计。");
             if (!s.failures.isEmpty()) {
                 sb.append("\n\n失败明细（最多显示 10 条）：");
@@ -2980,6 +3009,60 @@ public class MainUI {
         c.setPrefWidth(w);
         c.setCellValueFactory(cd -> new javafx.beans.property.SimpleStringProperty(f.apply(cd.getValue())));
         return c;
+    }
+
+    /** P0-1 异常报警专用弹窗：醒目标题 + 糖果渐变风格 */
+    private void showAlarmAlert(Stage owner, String title, String msg) {
+        Alert alert = new Alert(Alert.AlertType.WARNING);
+        alert.initOwner(owner);
+        alert.setTitle(title);
+        alert.setHeaderText(title);
+        Label content = new Label(msg);
+        content.setFont(Font.font("Microsoft YaHei", 14));
+        content.setWrapText(true);
+        content.setMaxWidth(420);
+        alert.getDialogPane().setContent(content);
+        alert.getDialogPane().setStyle("-fx-background-color: linear-gradient(to bottom right, #FFF0F6, #FFFFFF, #FFE3C9); "
+                + "-fx-background-radius: 20; -fx-border-color: #FFD2A8; -fx-border-radius: 20;");
+        styleDialogPane(alert.getDialogPane());
+        alert.showAndWait();
+    }
+
+    /** P0-2 健康摘要：近 30 天统计生成摘要 PDF，并用系统方式打开/分享 */
+    private void showHealthSummaryDialog(Stage owner) {
+        try {
+            HealthSummaryService summaryService = new HealthSummaryService();
+            HealthSummaryService.Summary s = summaryService.build(30);
+            if (!s.hasData()) {
+                showAlert("近 30 天暂无血糖记录，无法生成健康摘要。");
+                return;
+            }
+            FileChooser chooser = new FileChooser();
+            chooser.setTitle("保存健康摘要 PDF");
+            chooser.setInitialFileName("糖伴SugarPal-健康摘要-" + LocalDate.now() + ".pdf");
+            chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter("PDF 文件 (*.pdf)", "*.pdf"));
+            File f = chooser.showSaveDialog(owner);
+            if (f == null) {
+                return;
+            }
+            HealthSummaryPdfExporter.export(s, f.getAbsolutePath());
+            openWithSystem(f);
+        } catch (Exception ex) {
+            showAlert("生成健康摘要失败：" + ex.getMessage());
+        }
+    }
+
+    /** 用系统默认应用打开文件，用户可再经邮件/微信等渠道分享 */
+    private void openWithSystem(File f) {
+        try {
+            if (Desktop.isDesktopSupported() && Desktop.getDesktop().isSupported(Desktop.Action.OPEN)) {
+                Desktop.getDesktop().open(f);
+            } else {
+                new ProcessBuilder("explorer.exe", f.getAbsolutePath()).start();
+            }
+        } catch (Exception ex) {
+            showAlert("已生成摘要 PDF：\n" + f.getAbsolutePath() + "\n（自动打开失败，请手动打开后分享）");
+        }
     }
 
     private void showAlert(String msg) {
