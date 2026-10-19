@@ -3,15 +3,14 @@ package com.bloodsugar.ui;
 import com.bloodsugar.model.BloodSugarRecord;
 import com.bloodsugar.service.BloodSugarService;
 import com.bloodsugar.util.PeriodClassifier;
+
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Cursor;
-import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
 import javafx.scene.control.ButtonBar;
 import javafx.scene.control.ButtonType;
 import javafx.scene.control.Dialog;
-import javafx.scene.control.DialogPane;
 import javafx.scene.control.Label;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.control.TextField;
@@ -20,6 +19,7 @@ import javafx.scene.control.Tooltip;
 import javafx.scene.layout.GridPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
+import javafx.scene.layout.Region;
 import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
 import javafx.scene.paint.Color;
@@ -33,13 +33,10 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.YearMonth;
-import java.time.format.DateTimeFormatter;
-import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -50,11 +47,6 @@ import java.util.stream.Collectors;
  * 点击日期查看当天血糖记录与三餐时间，支持补填三餐时间与血糖记录。
  */
 public class CalendarDialog {
-
-    private static final DateTimeFormatter MONTH_FMT = DateTimeFormatter.ofPattern("yyyy年M月");
-    private static final DateTimeFormatter DAY_FMT = DateTimeFormatter.ofPattern("M月d日 EEEE", Locale.CHINA);
-    private static final DateTimeFormatter HM_FMT = DateTimeFormatter.ofPattern("HH:mm");
-    private static final DateTimeFormatter DATE_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd");
 
     // 糖果风格配色
     private static final String COLOR_TITLE = "#6B4226";
@@ -106,7 +98,7 @@ public class CalendarDialog {
         dialog.getDialogPane().setContent(content);
         dialog.getDialogPane().getButtonTypes().add(new ButtonType("关闭", ButtonBar.ButtonData.CANCEL_CLOSE));
         dialog.getDialogPane().setPrefSize(780, 780);
-        mainUI.styleDialogPane(dialog.getDialogPane());
+        DialogSupport.styleDialogPane(dialog.getDialogPane());
         dialog.showAndWait();
     }
 
@@ -157,11 +149,11 @@ public class CalendarDialog {
         monthLabel.setFont(Font.font("YouYuan", FontWeight.BOLD, 18));
         monthLabel.setTextFill(Color.web(COLOR_TITLE));
 
-        Button prevBtn = navButton("◀ 上月");
+        Button prevBtn = candyButton("◀ 上月", 13);
         prevBtn.setOnAction(e -> shiftMonth(-1));
-        Button nextBtn = navButton("下月 ▶");
+        Button nextBtn = candyButton("下月 ▶", 13);
         nextBtn.setOnAction(e -> shiftMonth(1));
-        Button todayBtn = navButton("回到今天");
+        Button todayBtn = candyButton("回到今天", 13);
         todayBtn.setOnAction(e -> {
             currentMonth = YearMonth.now();
             selectedDate = LocalDate.now();
@@ -170,8 +162,7 @@ public class CalendarDialog {
             showDayDetail(selectedDate);
         });
 
-        RegionGrow spacer = new RegionGrow();
-        HBox.setHgrow(spacer, Priority.ALWAYS);
+        Region spacer = DialogSupport.hGrowSpacer(10);
         HBox bar = new HBox(10, prevBtn, monthLabel, nextBtn, spacer, todayBtn);
         bar.setAlignment(Pos.CENTER_LEFT);
         return bar;
@@ -190,9 +181,9 @@ public class CalendarDialog {
     }
 
     private HBox buildActionBar() {
-        Button mealBtn = actionButton("补填三餐时间");
+        Button mealBtn = candyButton("补填三餐时间", 14);
         mealBtn.setOnAction(e -> showAddMealTimesDialog());
-        Button sugarBtn = actionButton("补填血糖记录");
+        Button sugarBtn = candyButton("补填血糖记录", 14);
         sugarBtn.setOnAction(e -> showAddSugarDialog());
         HBox bar = new HBox(12, mealBtn, sugarBtn);
         bar.setAlignment(Pos.CENTER_LEFT);
@@ -208,7 +199,7 @@ public class CalendarDialog {
             return row != null && row > 0;
         });
         dayCells.clear();
-        monthLabel.setText(currentMonth.format(MONTH_FMT));
+        monthLabel.setText(currentMonth.format(DialogFormats.MONTH_FMT));
 
         LocalDate first = currentMonth.atDay(1);
         int leading = first.getDayOfWeek().getValue() - 1; // 周一起始：周一=0
@@ -222,7 +213,9 @@ public class CalendarDialog {
         for (int d = 1; d <= daysInMonth; d++) {
             LocalDate date = currentMonth.atDay(d);
             int col = (leading + d - 1) % 7;
-            if (col == 0 && d > 1) row++;
+            if (col == 0 && d > 1) {
+                row++;
+            }
             StackPane cell = buildDayCell(date, today);
             grid.add(cell, col, row);
             dayCells.put(date, cell);
@@ -268,7 +261,7 @@ public class CalendarDialog {
             cell.getChildren().add(num);
         }
 
-        Tooltip tip = new Tooltip(date.format(DATE_FMT) + "（" + (hasRecord ? "有记录·黑体" : "无记录·白体") + "）");
+        Tooltip tip = new Tooltip(date.format(DialogFormats.DATE_FMT) + "（" + (hasRecord ? "有记录·黑体" : "无记录·白体") + "）");
         Tooltip.install(cell, tip);
 
         cell.setCursor(Cursor.HAND);
@@ -319,7 +312,7 @@ public class CalendarDialog {
     }
 
     private void showDayDetail(LocalDate date) {
-        dayTitleLabel.setText(date.format(DAY_FMT));
+        dayTitleLabel.setText(date.format(DialogFormats.DAY_FMT));
         detailBox.getChildren().clear();
         try {
             // 当天血糖记录（按凌晨4点业务日边界）
@@ -333,7 +326,7 @@ public class CalendarDialog {
             } else {
                 String mealLine = meals.entrySet().stream()
                         .sorted(Map.Entry.comparingByValue())
-                        .map(e -> e.getKey() + " " + e.getValue().format(HM_FMT))
+                        .map(e -> e.getKey() + " " + e.getValue().format(DialogFormats.TIME_FMT))
                         .collect(Collectors.joining("    "));
                 detailBox.getChildren().add(detailLabel("  " + mealLine, COLOR_TEXT, 12, false));
             }
@@ -344,7 +337,7 @@ public class CalendarDialog {
             } else {
                 for (BloodSugarRecord r : records) {
                     String time = r.getRecordTime() != null
-                            ? r.getRecordTime().format(DateTimeFormatter.ofPattern("HH:mm")) : "--";
+                            ? r.getRecordTime().format(DialogFormats.TIME_FMT) : "--";
                     String period = r.getMealPeriod() != null ? r.getMealPeriod() : "空腹";
                     String type = r.getMealType() != null && !r.getMealType().isEmpty() ? r.getMealType() : "-";
                     String note = r.getNote() != null && !r.getNote().isEmpty() ? "  备注：" + r.getNote() : "";
@@ -365,9 +358,11 @@ public class CalendarDialog {
     /** 补填三餐时间：按选中业务日保存（凌晨 0~4 点也归到该业务日） */
     private void showAddMealTimesDialog() {
         Dialog<ButtonType> dialog = new Dialog<>();
-        if (owner != null) dialog.initOwner(owner);
-        dialog.setTitle("补填三餐时间 - " + selectedDate.format(DATE_FMT));
-        dialog.setHeaderText("为 " + selectedDate.format(DAY_FMT) + " 补填用餐时间（HH:mm，留空不修改）");
+        if (owner != null) {
+            dialog.initOwner(owner);
+        }
+        dialog.setTitle("补填三餐时间 - " + selectedDate.format(DialogFormats.DATE_FMT));
+        dialog.setHeaderText("为 " + selectedDate.format(DialogFormats.DAY_FMT) + " 补填用餐时间（HH:mm，留空不修改）");
 
         GridPane grid = new GridPane();
         grid.setHgap(12);
@@ -389,7 +384,9 @@ public class CalendarDialog {
             lb.setTextFill(Color.web(COLOR_TITLE));
             TextField tf = new TextField();
             LocalDateTime st = saved.get(names[i]);
-            if (st != null) tf.setText(st.format(HM_FMT));
+            if (st != null) {
+                tf.setText(st.format(DialogFormats.TIME_FMT));
+            }
             tf.setPromptText("HH:mm");
             tf.setPrefWidth(140);
             tf.setTextFormatter(new TextFormatter<>(change -> {
@@ -411,20 +408,24 @@ public class CalendarDialog {
 
         dialog.getDialogPane().setContent(grid);
         dialog.getDialogPane().getButtonTypes().addAll(ButtonType.OK, ButtonType.CANCEL);
-        mainUI.styleDialogPane(dialog.getDialogPane());
+        DialogSupport.styleDialogPane(dialog.getDialogPane());
         dialog.setResultConverter(btn -> {
-            if (btn != ButtonType.OK) return null;
+            if (btn != ButtonType.OK) {
+                return null;
+            }
             int savedCount = 0;
             for (Map.Entry<String, TextField> entry : fields.entrySet()) {
                 String text = entry.getValue().getText().trim();
-                if (text.isEmpty()) continue;
+                if (text.isEmpty()) {
+                    continue;
+                }
                 try {
                     LocalTime t = LocalTime.parse(text.replace('.', ':'));
                     service.saveMealTimeForDate(selectedDate, entry.getKey(),
                             LocalDateTime.of(selectedDate, t));
                     savedCount++;
                 } catch (Exception ex) {
-                    showAlert("【" + entry.getKey() + "】时间格式不正确：" + ex.getMessage());
+                    DialogSupport.showAlert(owner, "【" + entry.getKey() + "】时间格式不正确：" + ex.getMessage());
                     return null;
                 }
             }
@@ -456,46 +457,21 @@ public class CalendarDialog {
         }
     }
 
-    private void showAlert(String message) {
-        Alert alert = new Alert(Alert.AlertType.WARNING);
-        if (owner != null) alert.initOwner(owner);
-        alert.setTitle("提示");
-        alert.setHeaderText(null);
-        alert.setContentText(message);
-        alert.showAndWait();
-    }
-
-    private Button navButton(String text) {
+    /** 糖果按钮：渐变底 + 悬停变亮（原 navButton / actionButton 两处重复实现合并，仅字号不同） */
+    private Button candyButton(String text, double size) {
         Button b = new Button(text);
-        b.setFont(Font.font("YouYuan", FontWeight.BOLD, 13));
+        b.setFont(Font.font("YouYuan", FontWeight.BOLD, size));
         b.setTextFill(Color.WHITE);
-        b.setStyle("-fx-background-color: linear-gradient(to bottom, #FFD36E, " + COLOR_BTN + "); "
+        String normal = "-fx-background-color: linear-gradient(to bottom, #FFD36E, " + COLOR_BTN + "); "
                 + "-fx-background-radius: 12; -fx-border-radius: 12; "
                 + "-fx-border-color: " + COLOR_BTN_DARK + "; -fx-border-width: 1; "
-                + "-fx-cursor: hand;");
-        b.setOnMouseEntered(e -> b.setStyle("-fx-background-color: linear-gradient(to bottom, #FFE9A8, "
-                + COLOR_BTN_HOVER + "); -fx-background-radius: 12; -fx-border-radius: 12; "
-                + "-fx-border-color: " + COLOR_BTN_DARK + "; -fx-border-width: 1; -fx-cursor: hand;"));
-        b.setOnMouseExited(e -> b.setStyle("-fx-background-color: linear-gradient(to bottom, #FFD36E, "
-                + COLOR_BTN + "); -fx-background-radius: 12; -fx-border-radius: 12; "
-                + "-fx-border-color: " + COLOR_BTN_DARK + "; -fx-border-width: 1; -fx-cursor: hand;"));
-        return b;
-    }
-
-    private Button actionButton(String text) {
-        Button b = new Button(text);
-        b.setFont(Font.font("YouYuan", FontWeight.BOLD, 14));
-        b.setTextFill(Color.WHITE);
-        b.setStyle("-fx-background-color: linear-gradient(to bottom, #FFD36E, " + COLOR_BTN + "); "
+                + "-fx-cursor: hand;";
+        String hover = "-fx-background-color: linear-gradient(to bottom, #FFE9A8, " + COLOR_BTN_HOVER + "); "
                 + "-fx-background-radius: 12; -fx-border-radius: 12; "
-                + "-fx-border-color: " + COLOR_BTN_DARK + "; -fx-border-width: 1; "
-                + "-fx-cursor: hand;");
-        b.setOnMouseEntered(e -> b.setStyle("-fx-background-color: linear-gradient(to bottom, #FFE9A8, "
-                + COLOR_BTN_HOVER + "); -fx-background-radius: 12; -fx-border-radius: 12; "
-                + "-fx-border-color: " + COLOR_BTN_DARK + "; -fx-border-width: 1; -fx-cursor: hand;"));
-        b.setOnMouseExited(e -> b.setStyle("-fx-background-color: linear-gradient(to bottom, #FFD36E, "
-                + COLOR_BTN + "); -fx-background-radius: 12; -fx-border-radius: 12; "
-                + "-fx-border-color: " + COLOR_BTN_DARK + "; -fx-border-width: 1; -fx-cursor: hand;"));
+                + "-fx-border-color: " + COLOR_BTN_DARK + "; -fx-border-width: 1; -fx-cursor: hand;";
+        b.setStyle(normal);
+        b.setOnMouseEntered(e -> b.setStyle(hover));
+        b.setOnMouseExited(e -> b.setStyle(normal));
         return b;
     }
 
@@ -513,13 +489,5 @@ public class CalendarDialog {
         lb.setFont(Font.font("YouYuan", weight, size));
         lb.setTextFill(Color.web(color));
         return lb;
-    }
-
-    /** 占位 spacer：简化 HBox.setHgrow 写法 */
-    private static class RegionGrow extends javafx.scene.layout.Region {
-        RegionGrow() {
-            setPrefWidth(10);
-            setMinWidth(10);
-        }
     }
 }
