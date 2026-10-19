@@ -61,17 +61,38 @@ sugarpal/
 │   │   │   └── assembly.xml            # 分发包配置
 │   │   ├── java/com/bloodsugar/
 │   │   │   ├── BloodSugarApp.java      # 应用入口
-│   │   │   ├── config/
-│   │   │   │   └── DatabaseConfig.java # H2 连接池配置
+│   │   │   ├── config/                 # 配置层
+│   │   │   │   ├── AiConfig.java       # AI 服务商配置（Key 本地混淆存储）
+│   │   │   │   ├── DatabaseConfig.java # H2 连接池配置
+│   │   │   │   └── DataLocation.java   # 数据目录管理与迁移
 │   │   │   ├── dao/
 │   │   │   │   └── BloodSugarDAO.java  # 数据访问层
 │   │   │   ├── model/
+│   │   │   │   ├── AgpReport.java      # AGP 报告数据模型
 │   │   │   │   ├── BloodSugarRecord.java
 │   │   │   │   └── MealPeriod.java
-│   │   │   ├── service/
-│   │   │   │   └── BloodSugarService.java
-│   │   │   ├── ui/
-│   │   │   │   └── MainUI.java         # 主界面（~980行）
+│   │   │   ├── service/                # 业务层
+│   │   │   │   ├── AgpPdfExporter.java      # AGP 报告 PDF 导出
+│   │   │   │   ├── AgpReportService.java    # AGP 指标计算（TIR/CV/SD/HbA1c）
+│   │   │   │   ├── AiSuggestionService.java # AI 建议（OpenAI 兼容接口）
+│   │   │   │   ├── BloodSugarService.java
+│   │   │   │   ├── CsvImportService.java    # 血糖仪数据批量导入
+│   │   │   │   └── ExportService.java       # Excel / PDF 导出
+│   │   │   ├── ui/                     # 界面层（MainUI 只保留主界面，
+│   │   │   │                            #  各功能对话框拆分为独立类）
+│   │   │   │   ├── MainUI.java               # 主界面与趋势曲线
+│   │   │   │   ├── CalendarDialog.java       # 月份日历与补填
+│   │   │   │   ├── RecordDialog.java         # 血糖记录 新增/修改/补填
+│   │   │   │   ├── HealthEntryDialog.java    # 多维健康录入与趋势
+│   │   │   │   ├── AiSuggestionDialog.java   # AI 建议与模型设置
+│   │   │   │   ├── ExportDialog.java         # 导出报告
+│   │   │   │   ├── SummaryReportDialog.java  # 总结报告与风险评估
+│   │   │   │   ├── AgpReportDialog.java      # AGP 葡萄糖图谱
+│   │   │   │   ├── DataImportDialog.java     # 血糖仪数据批量导入
+│   │   │   │   ├── DialogSupport.java        # 对话框公共样式与控件工厂
+│   │   │   │   ├── DialogFormats.java        # 日期时间格式常量
+│   │   │   │   ├── MealTypeAutoRecognizer.java # 餐别自动识别
+│   │   │   │   └── HealthAdvice.java        # 血糖建议文案
 │   │   │   └── util/
 │   │   │       └── PeriodClassifier.java  # 时段分类与正常区间
 │   │   └── resources/
@@ -80,6 +101,21 @@ sugarpal/
 │   └── test/
 └── .vscode/                            # VS Code 运行配置
 ```
+
+## 代码整理说明（v1.2.0 软著申请整理版）
+
+本版本为**软著申请专用整理版**，在不改变任何功能与交互行为的前提下完成代码清理：
+
+- **拆分巨类**：原 `MainUI.java`（约 3000 行）按功能拆分为「主界面 + 9 个功能对话框类」，
+  主界面保留主界面组装、数据刷新与图表渲染（约 1200 行）
+- **消除重复**：合并 5 处重复的对话框关闭按钮样式、添加/修改对话框重复的健康字段逻辑、
+  两处重复的表格列工厂、日历对话框重复的按钮工厂
+- **删除死代码**：移除空实现的监听器、定义后从未使用的常量与 import
+- **规范风格**：全库取消通配符 import、清除全限定名混用，统一命名与注释
+- **提取公共层**：`DialogSupport`（样式/控件工厂）、`DialogFormats`（格式常量）、
+  `MealTypeAutoRecognizer`（餐别识别）、`HealthAdvice`（建议文案）供各对话框共用
+
+功能与数据格式与 v1.1.0 完全一致，已通过 `mvn package` 完整构建验证。
 
 ## 数据库
 

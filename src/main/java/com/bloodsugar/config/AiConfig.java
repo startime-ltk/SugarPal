@@ -5,10 +5,9 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.List;
-import java.util.Objects;
 import java.util.Properties;
+import java.util.stream.Collectors;
 
 /**
  * AI 建议模块的配置管理。
@@ -57,14 +56,14 @@ public class AiConfig {
                     "https://ark.cn-beijing.volces.com/api/v3/chat/completions", "doubao-seed-1-6-250615"),
             new ProviderMeta(PROVIDER_CUSTOM, "自定义 OpenAI 兼容", "", ""));
 
-    private static Path configFile() {
-        return DataLocation.getStartupDataRoot().resolve("config.properties");
-    }
+    /** 本地混淆盐：仅用于防止 config.properties 明文直读，不承担真正的安全加密 */
+    private static final byte[] LOCAL_OBFUSCATION = {0x35, 0x5A, 0x13, 0x77, 0x2E, 0x44, 0x61, 0x1C};
 
     private final Properties props = new Properties();
 
-    /** 本地混淆盐：仅用于防止 config.properties 明文直读，不承担真正的安全加密 */
-    private static final byte[] LOCAL_OBFUSCATION = {0x35, 0x5A, 0x13, 0x77, 0x2E, 0x44, 0x61, 0x1C};
+    private static Path configFile() {
+        return DataLocation.getStartupDataRoot().resolve("config.properties");
+    }
 
     /** 将 API Key 做本地混淆编码后落盘；空值返回空串，不产生 enc 前缀 */
     private static String encodeKey(String plain) {
@@ -117,24 +116,13 @@ public class AiConfig {
             // 读失败就用默认值，不阻塞启动
         }
         cfg.props.putIfAbsent("ai.activeProvider", PROVIDER_GLM);
-        cfg.props.putIfAbsent("ai.glm.baseUrl", "https://open.bigmodel.cn/api/paas/v4/chat/completions");
-        cfg.props.putIfAbsent("ai.glm.model", "glm-4.6-flash");
-        cfg.props.putIfAbsent("ai.glm.apiKey", "");
-        cfg.props.putIfAbsent("ai.deepseek.baseUrl", "https://api.deepseek.com/v1/chat/completions");
-        cfg.props.putIfAbsent("ai.deepseek.model", "deepseek-chat");
-        cfg.props.putIfAbsent("ai.deepseek.apiKey", "");
-        cfg.props.putIfAbsent("ai.qwen.baseUrl", "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions");
-        cfg.props.putIfAbsent("ai.qwen.model", "qwen-plus");
-        cfg.props.putIfAbsent("ai.qwen.apiKey", "");
-        cfg.props.putIfAbsent("ai.kimi.baseUrl", "https://api.moonshot.cn/v1/chat/completions");
-        cfg.props.putIfAbsent("ai.kimi.model", "moonshot-v1-8k");
-        cfg.props.putIfAbsent("ai.kimi.apiKey", "");
-        cfg.props.putIfAbsent("ai.doubao.baseUrl", "https://ark.cn-beijing.volces.com/api/v3/chat/completions");
-        cfg.props.putIfAbsent("ai.doubao.model", "doubao-seed-1-6-250615");
-        cfg.props.putIfAbsent("ai.doubao.apiKey", "");
-        cfg.props.putIfAbsent("ai.custom.baseUrl", "");
-        cfg.props.putIfAbsent("ai.custom.model", "");
-        cfg.props.putIfAbsent("ai.custom.apiKey", "");
+        // 各 provider 的默认值统一由 PROVIDERS 注册表生成，避免两处维护
+        for (ProviderMeta m : PROVIDERS) {
+            String prefix = "ai." + m.id + ".";
+            cfg.props.putIfAbsent(prefix + "baseUrl", m.defaultBaseUrl);
+            cfg.props.putIfAbsent(prefix + "model", m.defaultModel);
+            cfg.props.putIfAbsent(prefix + "apiKey", "");
+        }
         return cfg;
     }
 
@@ -165,21 +153,13 @@ public class AiConfig {
 
     /** 全部 provider id 列表（内置 + 自定义），顺序即 UI 展示顺序 */
     public static List<String> getProviderIds() {
-        List<String> ids = new ArrayList<>();
-        for (ProviderMeta m : PROVIDERS) {
-            ids.add(m.id);
-        }
-        return ids;
+        return PROVIDERS.stream().map(m -> m.id).collect(Collectors.toList());
     }
 
     /** 模型显示名，用于 UI 下拉框；未知 provider 回退显示 id 本身 */
     public static String displayName(String provider) {
-        for (ProviderMeta m : PROVIDERS) {
-            if (m.id.equals(provider)) {
-                return m.display;
-            }
-        }
-        return provider;
+        ProviderMeta m = metaOf(provider);
+        return m == null ? provider : m.display;
     }
 
     /** 由显示名反查 provider id；找不到返回 null */
@@ -198,12 +178,7 @@ public class AiConfig {
     }
 
     private static boolean isRegistered(String provider) {
-        for (ProviderMeta m : PROVIDERS) {
-            if (m.id.equals(provider)) {
-                return true;
-            }
-        }
-        return false;
+        return metaOf(provider) != null;
     }
 
     private static ProviderMeta metaOf(String provider) {
