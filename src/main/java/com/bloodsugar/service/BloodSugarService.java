@@ -74,6 +74,11 @@ public class BloodSugarService {
         dao.delete(id);
     }
 
+    // 仅更新备注（日记/日历补备注用，不重新计算时段，不动其他字段）
+    public void updateNote(int id, String note) throws SQLException {
+        dao.updateNote(id, note);
+    }
+
     // 更新一条
     public void updateRecord(BloodSugarRecord record) throws SQLException {
         // 重新计算时段

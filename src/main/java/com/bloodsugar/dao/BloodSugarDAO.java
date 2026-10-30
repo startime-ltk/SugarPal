@@ -93,6 +93,17 @@ public class BloodSugarDAO {
         }
     }
 
+    // 仅更新备注（日记/日历补备注用，不重新计算时段，不动其他字段）
+    public void updateNote(int id, String note) throws SQLException {
+        String sql = "UPDATE blood_sugar_records SET note=? WHERE id=?";
+        try (Connection conn = DatabaseConfig.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, note);
+            ps.setInt(2, id);
+            ps.executeUpdate();
+        }
+    }
+
     // 按 id 更新
     public void update(BloodSugarRecord record) throws SQLException {
         String sql = "UPDATE blood_sugar_records SET record_time=?, blood_sugar=?, meal_time=?, meal_period=?, meal_type=?, note=?, "

@@ -352,7 +352,16 @@ public class CalendarDialog {
                     String color = normal ? COLOR_NORMAL : COLOR_ABNORMAL;
                     String line = String.format("  %s    %.1f mmol/L   %s   %s%s",
                             time, r.getBloodSugar(), period, type, note);
-                    detailBox.getChildren().add(detailLabel(line, color, 12, normal));
+                    Label rowLabel = detailLabel(line, color, 12, normal);
+                    // 点击该条记录可补充/修改备注
+                    rowLabel.setCursor(Cursor.HAND);
+                    rowLabel.setOnMouseEntered(e -> rowLabel.setStyle(
+                            "-fx-background-color: rgba(255,143,179,0.15); -fx-background-radius: 8;"));
+                    rowLabel.setOnMouseExited(e -> rowLabel.setStyle("-fx-background-color: transparent;"));
+                    Tooltip tip = new Tooltip("点击补充/修改备注");
+                    Tooltip.install(rowLabel, tip);
+                    rowLabel.setOnMouseClicked(e -> showEditNoteDialog(r));
+                    detailBox.getChildren().add(rowLabel);
                 }
             }
         } catch (SQLException ex) {
@@ -361,6 +370,56 @@ public class CalendarDialog {
     }
 
     // ---------- 补填 ----------
+
+    /** 补充/修改备注：展示记录上下文（时间/血糖/餐别），备注选填可清空，保存仅写 note 字段 */
+    private void showEditNoteDialog(BloodSugarRecord r) {
+        Dialog<ButtonType> dialog = new Dialog<>();
+        if (owner != null) dialog.initOwner(owner);
+        dialog.setTitle("补充/修改备注");
+        dialog.setHeaderText("点击保存后仅修改本条记录的备注，其他内容不变");
+
+        GridPane grid = new GridPane();
+        grid.setHgap(12);
+        grid.setVgap(12);
+        grid.setPadding(new Insets(20));
+
+        String time = r.getRecordTime() != null
+                ? r.getRecordTime().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")) : "--";
+        String period = r.getMealPeriod() != null ? r.getMealPeriod() : "空腹";
+        String type = r.getMealType() != null && !r.getMealType().isEmpty() ? r.getMealType() : "-";
+        String context = String.format("%s    血糖 %.1f mmol/L    %s    %s",
+                time, r.getBloodSugar(), period, type);
+        Label contextLabel = new Label(context);
+        contextLabel.setFont(Font.font("YouYuan", FontWeight.BOLD, 13));
+        contextLabel.setTextFill(Color.web(COLOR_TITLE));
+
+        TextField noteField = new TextField(r.getNote() != null ? r.getNote() : "");
+        noteField.setPromptText("选填，可清空");
+        noteField.setPrefWidth(320);
+        noteField.setStyle("-fx-background-radius: 8; -fx-border-radius: 8; "
+                + "-fx-border-color: " + COLOR_DAY_BORDER + "; -fx-background-color: #FFFFFF;");
+
+        grid.add(contextLabel, 0, 0, 2, 1);
+        grid.add(new Label("备注:"), 0, 1);
+        grid.add(noteField, 1, 1);
+
+        dialog.getDialogPane().setContent(grid);
+        dialog.getDialogPane().getButtonTypes().addAll(ButtonType.OK, ButtonType.CANCEL);
+        mainUI.styleDialogPane(dialog.getDialogPane());
+        dialog.setResultConverter(btn -> {
+            if (btn != ButtonType.OK) return null;
+            try {
+                service.updateNote(r.getId(), noteField.getText().trim());
+                showDayDetail(selectedDate);
+                mainUI.refreshAll();
+            } catch (SQLException ex) {
+                showAlert("保存备注失败：" + ex.getMessage());
+                return null;
+            }
+            return btn;
+        });
+        dialog.showAndWait();
+    }
 
     /** 补填三餐时间：按选中业务日保存（凌晨 0~4 点也归到该业务日） */
     private void showAddMealTimesDialog() {

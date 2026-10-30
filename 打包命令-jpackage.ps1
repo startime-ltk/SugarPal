@@ -1,4 +1,4 @@
-# ============================================================
+﻿# ============================================================
 # 糖伴SugarPal PC端 jpackage 打包命令（修复 java.sql 缺失）
 # 根因：jlink 裁剪运行时缺 java.sql，导致 NoClassDefFoundError:
 #       java/sql/SQLException，应用启动即崩。
@@ -36,11 +36,11 @@ jpackage --type app-image `
   --name 糖伴SugarPal `
   --icon $icon `
   --dest $destRoot `
-  --app-version "1.2.4"
+  --app-version "1.3.0"
 if ($LASTEXITCODE -ne 0) { throw "jpackage failed" }
 
 # 4. Inno Setup 编译安装包
 & "F:\Inno Setup 7\ISCC.exe" "F:\项目成品安装包以及源码\糖伴SugarPal\打包脚本\糖伴SugarPal-installer.iss"
 if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
 
-Write-Host "打包完成：$destRoot\糖伴SugarPal-1.2.4-安装包.exe"
+Write-Host "打包完成：$destRoot\糖伴SugarPal-1.3.0-安装包.exe"
