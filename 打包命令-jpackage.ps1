@@ -36,11 +36,11 @@ jpackage --type app-image `
   --name 糖伴SugarPal `
   --icon $icon `
   --dest $destRoot `
-  --app-version "1.3.0"
+  --app-version "1.3.1"
 if ($LASTEXITCODE -ne 0) { throw "jpackage failed" }
 
 # 4. Inno Setup 编译安装包
 & "F:\Inno Setup 7\ISCC.exe" "F:\项目成品安装包以及源码\糖伴SugarPal\打包脚本\糖伴SugarPal-installer.iss"
 if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
 
-Write-Host "打包完成：$destRoot\糖伴SugarPal-1.3.0-安装包.exe"
+Write-Host "打包完成：$destRoot\糖伴SugarPal-1.3.1-安装包.exe"

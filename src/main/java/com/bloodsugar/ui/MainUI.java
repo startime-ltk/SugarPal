@@ -218,11 +218,15 @@ public class MainUI {
         Button dataLocationBtn = styledButton("数据位置", "#C9CDD6", "#98A1AF", "#E2E6EC", "#B4BBC8", "#667080", "#D2D8E0");
         dataLocationBtn.setOnAction(e -> showDataLocationDialog(stage));
 
+        // 关于：版本信息与一键更新入口，浅银灰风格区别于功能按钮
+        Button aboutBtn = styledButton("关于", "#C9CDD6", "#98A1AF", "#E2E6EC", "#B4BBC8", "#667080", "#D2D8E0");
+        aboutBtn.setOnAction(e -> AboutDialog.show(stage));
+
         Button refreshBtn = styledButton("刷新", COLOR_ORANGE_LIGHT, COLOR_ORANGE_DARK, "#FFDDB8", COLOR_ORANGE_LIGHT, "#F08A33", "#FFC48C");
         refreshBtn.setOnAction(e -> refreshAll());
 
         toolbar.getChildren().addAll(dots, title, spacer, addBtn, calendarBtn, summaryBtn, agpBtn, shareSummaryBtn,
-                importBtn, aiBtn, exportBtn, dataLocationBtn, refreshBtn);
+                importBtn, aiBtn, exportBtn, dataLocationBtn, aboutBtn, refreshBtn);
         return toolbar;
     }
 
