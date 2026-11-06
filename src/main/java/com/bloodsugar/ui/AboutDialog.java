@@ -3,9 +3,11 @@ package com.bloodsugar.ui;
 import com.bloodsugar.config.DataLocation;
 import com.bloodsugar.config.UpdateConfig;
 import com.bloodsugar.config.VersionInfo;
+import com.bloodsugar.service.BackupService;
 import com.bloodsugar.service.UpdateService;
 import com.bloodsugar.service.UpdateService.UpdateException;
 import com.bloodsugar.service.UpdateService.UpdateInfo;
+import com.bloodsugar.util.AppLog;
 
 import javafx.application.Platform;
 import javafx.geometry.Insets;
@@ -26,8 +28,10 @@ import javafx.scene.layout.VBox;
 import javafx.scene.paint.Color;
 import javafx.scene.text.Font;
 import javafx.scene.text.FontWeight;
+import javafx.stage.FileChooser;
 import javafx.stage.Stage;
 
+import java.io.File;
 import java.nio.file.Path;
 import java.util.Optional;
 
@@ -161,7 +165,32 @@ public class AboutDialog {
         HBox.setHgrow(dataLocField, Priority.ALWAYS);
         VBox dataLocBox = new VBox(4, dataLocTitle, dataLocRow);
 
-        box.getChildren().addAll(header, intro, new Region(), dataLocBox, sourceBox, updateTitle, updateRow);
+        // 数据备份 / 恢复：备份用 H2 一致性快照，恢复前强制先另存现有数据
+        Label backupTitle = new Label("数据备份");
+        backupTitle.setFont(Font.font("Microsoft YaHei", FontWeight.BOLD, 14));
+        backupTitle.setTextFill(Color.web(COLOR_TITLE));
+
+        Label backupHint = new Label("把血糖数据打包成一个 .zip 存到别处；换电脑、重装系统后可以一键还原。");
+        backupHint.setWrapText(true);
+        backupHint.setFont(Font.font("Microsoft YaHei", 11));
+        backupHint.setTextFill(Color.web(COLOR_GRAY));
+
+        Button backupBtn = smallGrayButton("备份数据…");
+        Button restoreBtn = smallGrayButton("从备份恢复…");
+        Label backupStatus = new Label("");
+        backupStatus.setFont(Font.font("Microsoft YaHei", 11));
+        backupStatus.setTextFill(Color.web(COLOR_GRAY));
+        backupStatus.setWrapText(true);
+
+        backupBtn.setOnAction(e -> runBackupFlow(owner, backupBtn, restoreBtn, backupStatus));
+        restoreBtn.setOnAction(e -> runRestoreFlow(owner, backupBtn, restoreBtn, backupStatus));
+
+        HBox backupRow = new HBox(8, backupBtn, restoreBtn, backupStatus);
+        backupRow.setAlignment(Pos.CENTER_LEFT);
+        HBox.setHgrow(backupStatus, Priority.ALWAYS);
+        VBox backupBox = new VBox(4, backupTitle, backupHint, backupRow);
+
+        box.getChildren().addAll(header, intro, new Region(), dataLocBox, backupBox, sourceBox, updateTitle, updateRow);
         pane.setContent(box);
 
         Button closeBtn = (Button) pane.lookupButton(closeType);
@@ -259,6 +288,165 @@ public class AboutDialog {
     }
 
     // ---------- 样式辅助 ----------
+
+    /** 备份：选保存位置 → 后台生成一致性快照 → 提示结果 */
+    private static void runBackupFlow(Stage owner, Button backupBtn, Button restoreBtn, Label status) {
+        FileChooser chooser = new FileChooser();
+        chooser.setTitle("选择备份保存位置");
+        chooser.setInitialFileName(BackupService.defaultFileName());
+        chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter("糖伴备份文件 (*.zip)", "*.zip"));
+        Path dataRoot = DataLocation.getStartupDataRoot();
+        if (dataRoot.toFile().isDirectory()) {
+            chooser.setInitialDirectory(dataRoot.toFile());
+        }
+        File target = chooser.showSaveDialog(owner);
+        if (target == null) {
+            return;
+        }
+
+        backupBtn.setDisable(true);
+        restoreBtn.setDisable(true);
+        status.setText("正在备份，请稍候……");
+
+        new Thread(() -> {
+            try {
+                BackupService.BackupResult r = new BackupService().backupTo(target.toPath());
+                Platform.runLater(() -> {
+                    status.setText("备份完成：" + r.file.getFileName());
+                    showInfo(owner, "备份完成",
+                            "数据已备份到：\n" + r.file
+                                    + "\n\n大小：" + formatSize(r.size)
+                                    + "\n记录条数：" + (r.meta.recordCount < 0 ? "未知" : r.meta.recordCount + " 条")
+                                    + "\n\n建议把这个文件再复制一份到 U 盘或网盘，多一层保险。");
+                });
+            } catch (Exception ex) {
+                AppLog.error("界面层备份失败", ex);
+                Platform.runLater(() -> {
+                    status.setText("备份失败");
+                    showInfo(owner, "备份失败", ex.getMessage());
+                });
+            } finally {
+                Platform.runLater(() -> {
+                    backupBtn.setDisable(false);
+                    restoreBtn.setDisable(false);
+                });
+            }
+        }, "sugarpal-backup").start();
+    }
+
+    /** 恢复：选文件 → 校验并展示备份信息 → 二次确认 → 后台恢复 → 提示重启 */
+    private static void runRestoreFlow(Stage owner, Button backupBtn, Button restoreBtn, Label status) {
+        FileChooser chooser = new FileChooser();
+        chooser.setTitle("选择要恢复的备份文件");
+        chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter("糖伴备份文件 (*.zip)", "*.zip"));
+        File src = chooser.showOpenDialog(owner);
+        if (src == null) {
+            return;
+        }
+
+        BackupService svc = new BackupService();
+        BackupService.BackupMeta meta;
+        try {
+            meta = svc.inspect(src.toPath());
+        } catch (Exception ex) {
+            showInfo(owner, "无法恢复", ex.getMessage());
+            return;
+        }
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("备份文件：").append(src.getName()).append("\n");
+        if (meta.official) {
+            sb.append("备份时间：").append(meta.createdAt.isEmpty() ? "未知" : meta.createdAt).append("\n");
+            sb.append("糖伴版本：").append(meta.version.isEmpty() ? "未知" : meta.version).append("\n");
+            sb.append("记录条数：").append(meta.recordCount < 0 ? "未知" : meta.recordCount + " 条").append("\n");
+        } else {
+            sb.append("（这个压缩包里没有备份说明文件，将按原始数据库恢复）\n");
+        }
+        sb.append("\n恢复会覆盖当前的全部血糖记录。");
+        sb.append("\n恢复前，当前数据会自动另存到数据目录下的 backup_before_restore_* 文件夹，不会丢。");
+
+        Alert confirm = new Alert(Alert.AlertType.CONFIRMATION);
+        confirm.initOwner(owner);
+        confirm.setTitle("确认恢复");
+        confirm.setHeaderText("要用这个备份覆盖当前数据吗？");
+        confirm.setContentText(sb.toString());
+        ButtonType okBtn = new ButtonType("确认恢复", ButtonBar.ButtonData.OK_DONE);
+        ButtonType cancelBtn = new ButtonType("取消", ButtonBar.ButtonData.CANCEL_CLOSE);
+        confirm.getButtonTypes().setAll(okBtn, cancelBtn);
+        styleAlert(confirm);
+        Optional<ButtonType> res = confirm.showAndWait();
+        if (res.isEmpty() || res.get() != okBtn) {
+            return;
+        }
+
+        backupBtn.setDisable(true);
+        restoreBtn.setDisable(true);
+        status.setText("正在恢复，请稍候……");
+
+        new Thread(() -> {
+            try {
+                Path safeDir = svc.restoreFrom(src.toPath());
+                Platform.runLater(() -> {
+                    status.setText("恢复完成，需重启生效");
+                    offerRestart(owner, safeDir);
+                });
+            } catch (Exception ex) {
+                AppLog.error("界面层恢复失败", ex);
+                Platform.runLater(() -> {
+                    status.setText("恢复失败");
+                    showInfo(owner, "恢复失败", ex.getMessage());
+                    backupBtn.setDisable(false);
+                    restoreBtn.setDisable(false);
+                });
+            }
+        }, "sugarpal-restore").start();
+    }
+
+    /**
+     * 恢复后数据库连接池已关闭，程序必须退出重开——否则后续读写都会失败。
+     * 所以这里只给「立即重启」和「退出程序」两个选项，都会结束当前进程。
+     */
+    private static void offerRestart(Stage owner, Path safeDir) {
+        Alert alert = new Alert(Alert.AlertType.INFORMATION);
+        alert.initOwner(owner);
+        alert.setTitle("恢复完成");
+        alert.setHeaderText("数据已恢复，需要重启糖伴");
+        alert.setContentText("恢复前的旧数据已保存到：\n" + safeDir
+                + "\n\n数据库连接已关闭，必须重新打开糖伴才能继续使用。");
+        ButtonType restartBtn = new ButtonType("立即重启", ButtonBar.ButtonData.OK_DONE);
+        ButtonType exitBtn = new ButtonType("退出程序", ButtonBar.ButtonData.CANCEL_CLOSE);
+        alert.getButtonTypes().setAll(restartBtn, exitBtn);
+        styleAlert(alert);
+        Optional<ButtonType> r = alert.showAndWait();
+        if (r.isPresent() && r.get() == restartBtn) {
+            restartSelf();
+        } else {
+            Platform.exit();
+        }
+    }
+
+    /** 用当前进程的可执行文件路径重新拉起自己 */
+    private static void restartSelf() {
+        try {
+            String exe = ProcessHandle.current().info().command().orElse(null);
+            if (exe != null && !exe.isBlank()) {
+                new ProcessBuilder(exe).start();
+            }
+        } catch (Exception ex) {
+            AppLog.warn("自动重启失败，请手动重新打开糖伴", ex);
+        }
+        Platform.exit();
+    }
+
+    private static String formatSize(long bytes) {
+        if (bytes < 1024) {
+            return bytes + " 字节";
+        }
+        if (bytes < 1024 * 1024) {
+            return String.format("%.1f KB", bytes / 1024.0);
+        }
+        return String.format("%.1f MB", bytes / 1024.0 / 1024.0);
+    }
 
     private static void styleDialogPane(DialogPane pane) {
         pane.setStyle("-fx-background-color: linear-gradient(to bottom right, #FFF6E9, " + COLOR_BG + ", #FFF0F6); "
