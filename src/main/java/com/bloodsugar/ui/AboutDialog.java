@@ -1,5 +1,6 @@
 package com.bloodsugar.ui;
 
+import com.bloodsugar.config.DataLocation;
 import com.bloodsugar.config.UpdateConfig;
 import com.bloodsugar.config.VersionInfo;
 import com.bloodsugar.service.UpdateService;
@@ -31,11 +32,14 @@ import java.nio.file.Path;
 import java.util.Optional;
 
 /**
- * 关于对话框：产品信息（名称/版本/简介）+ 更新源配置（可编辑）+ 一键更新。
+ * 关于对话框：产品信息（名称/版本/简介）+ 数据位置（展示当前目录并提供更改入口）
+ * + 更新源配置（可编辑）+ 一键更新。
  *
  * <p>一键更新流程：检查更新 → 有新版则确认 → 下载安装包到临时目录 →
  * 静默运行安装程序（/VERYSILENT /SUPPRESSMSGBOXES /NORESTART）并提示重新打开。
  * 更新源默认 GitHub Releases API，下载支持国内加速镜像前缀回退直连。
+ *
+ * <p>数据位置入口由调用方以 {@code openDataLocation} 动作注入，避免本类反向依赖 MainUI 实例。
  */
 public class AboutDialog {
 
@@ -57,8 +61,8 @@ public class AboutDialog {
     private AboutDialog() {
     }
 
-    /** 弹出关于对话框（模态，owner 为主窗口） */
-    public static void show(Stage owner) {
+    /** 弹出关于对话框（模态，owner 为主窗口；openDataLocation 为打开“数据位置设置”的动作） */
+    public static void show(Stage owner, Runnable openDataLocation) {
         Dialog<ButtonType> dialog = new Dialog<>();
         dialog.initOwner(owner);
         dialog.setTitle("关于糖伴SugarPal");
@@ -136,7 +140,28 @@ public class AboutDialog {
         updateRow.setAlignment(Pos.CENTER_LEFT);
         HBox.setHgrow(status, Priority.ALWAYS);
 
-        box.getChildren().addAll(header, intro, new Region(), sourceBox, updateTitle, updateRow);
+        // 数据位置（在关于中集中管理）：展示当前数据目录，并提供更改入口
+        Label dataLocTitle = new Label("数据位置");
+        dataLocTitle.setFont(Font.font("Microsoft YaHei", FontWeight.BOLD, 14));
+        dataLocTitle.setTextFill(Color.web(COLOR_TITLE));
+
+        Path currentDataRoot = DataLocation.getStartupDataRoot();
+        TextField dataLocField = new TextField(currentDataRoot.toString());
+        dataLocField.setEditable(false);
+        dataLocField.setPrefColumnCount(46);
+        dataLocField.setStyle("-fx-background-color: #ECEFF3; -fx-text-fill: #667080; "
+                + "-fx-border-color: #D2D8E0; -fx-border-radius: 6; -fx-background-radius: 6;");
+        dataLocField.setFocusTraversable(false);
+
+        Button changeLocBtn = smallGrayButton("更改数据位置");
+        changeLocBtn.setOnAction(e -> openDataLocation.run());
+
+        HBox dataLocRow = new HBox(8, dataLocField, changeLocBtn);
+        dataLocRow.setAlignment(Pos.CENTER_LEFT);
+        HBox.setHgrow(dataLocField, Priority.ALWAYS);
+        VBox dataLocBox = new VBox(4, dataLocTitle, dataLocRow);
+
+        box.getChildren().addAll(header, intro, new Region(), dataLocBox, sourceBox, updateTitle, updateRow);
         pane.setContent(box);
 
         Button closeBtn = (Button) pane.lookupButton(closeType);

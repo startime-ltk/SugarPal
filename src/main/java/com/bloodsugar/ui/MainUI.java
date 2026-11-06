@@ -161,9 +161,9 @@ public class MainUI {
     }
 
     // 顶部工具栏
-    private HBox buildToolbar(Stage stage) {
-        HBox toolbar = new HBox(10);
-        toolbar.setPadding(new Insets(12, 16, 12, 16));
+    private VBox buildToolbar(Stage stage) {
+        VBox toolbar = new VBox(6);
+        toolbar.setPadding(new Insets(10, 16, 10, 16));
         toolbar.setStyle("-fx-background-color: linear-gradient(to right, #FFFFFF, #E3FBF0, #FFF0F6); "
                 + "-fx-border-color: " + COLOR_BORDER + "; -fx-border-width: 0 0 2 0;");
         toolbar.setAlignment(Pos.CENTER_LEFT);
@@ -214,19 +214,25 @@ public class MainUI {
         Button exportBtn = styledButton("导出报告", "#C9B2FF", "#9B6BFF", "#E0D2FF", "#B78DFF", "#7F4FD8", "#CDB4FF");
         exportBtn.setOnAction(e -> showExportDialog(stage));
 
-        // 数据位置设置：查看/修改数据存放目录（重启生效），浅银灰风格区别于功能按钮
-        Button dataLocationBtn = styledButton("数据位置", "#C9CDD6", "#98A1AF", "#E2E6EC", "#B4BBC8", "#667080", "#D2D8E0");
-        dataLocationBtn.setOnAction(e -> showDataLocationDialog(stage));
-
-        // 关于：版本信息与一键更新入口，浅银灰风格区别于功能按钮
+        // 关于：版本信息 / 更新源配置 / 一键更新 / 数据位置入口，浅银灰风格区别于功能按钮
         Button aboutBtn = styledButton("关于", "#C9CDD6", "#98A1AF", "#E2E6EC", "#B4BBC8", "#667080", "#D2D8E0");
-        aboutBtn.setOnAction(e -> AboutDialog.show(stage));
+        aboutBtn.setOnAction(e -> AboutDialog.show(stage, () -> showDataLocationDialog(stage)));
 
         Button refreshBtn = styledButton("刷新", COLOR_ORANGE_LIGHT, COLOR_ORANGE_DARK, "#FFDDB8", COLOR_ORANGE_LIGHT, "#F08A33", "#FFC48C");
         refreshBtn.setOnAction(e -> refreshAll());
 
-        toolbar.getChildren().addAll(dots, title, spacer, addBtn, calendarBtn, summaryBtn, agpBtn, shareSummaryBtn,
-                importBtn, aiBtn, exportBtn, dataLocationBtn, aboutBtn, refreshBtn);
+        // 第一行：装饰点 + 标题 + 主操作（添加记录 / 日历 / 导入数据 / AI 建议 / 关于 / 刷新）
+        HBox topRow = new HBox(10, dots, title, spacer, addBtn, calendarBtn, importBtn, aiBtn, aboutBtn, refreshBtn);
+        topRow.setAlignment(Pos.CENTER_LEFT);
+
+        // 第二行：数据报告分组（生成总结 / AGP 报告 / 分享摘要 / 导出报告）
+        Label reportTitle = new Label("数据报告");
+        reportTitle.setFont(Font.font("Microsoft YaHei", FontWeight.BOLD, 14));
+        reportTitle.setTextFill(Color.web(COLOR_TITLE));
+        HBox reportRow = new HBox(10, reportTitle, summaryBtn, agpBtn, shareSummaryBtn, exportBtn);
+        reportRow.setAlignment(Pos.CENTER_LEFT);
+
+        toolbar.getChildren().addAll(topRow, reportRow);
         return toolbar;
     }
 
