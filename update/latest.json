@@ -1,12 +1,12 @@
 {
-  "tag_name": "v1.3.5",
-  "name": "糖伴 SugarPal v1.3.5",
-  "body": "糖伴 SugarPal 桌面版 v1.3.5：修复「检查更新/下载」在开启 Clash 等系统代理时因 TLS 中间人拦截导致的 handshake_failure——更新逻辑改为先走系统代理，一旦 TLS 握手失败自动绕过代理直连 GitHub；含 1.3.4 的多源回退与 1.3.3 的可选安装位置。功能与 1.3.4 一致，覆盖安装不丢血糖数据。",
+  "tag_name": "v1.3.6",
+  "name": "糖伴 SugarPal v1.3.6",
+  "body": "糖伴 SugarPal 桌面版 v1.3.6：修复「检查更新/下载安装包」始终报 handshake_failure 的根本问题——打包用的精简 Java 运行时缺少 jdk.crypto.ec 模块，无法对 GitHub 证书链上的 EC 根（USERTrust ECC）验签，导致 TLS 握手失败；本版运行时已补齐该模块。与代理、网络无关。含 1.3.4 的多源回退、1.3.5 的代理直连兜底、1.3.3 的可选安装位置。覆盖安装不丢血糖数据。",
   "assets": [
     {
-      "name": "SugarPal-Setup-v1.3.5.exe",
-      "browser_download_url": "https://github.com/startime-ltk/SugarPal/releases/download/v1.3.5/SugarPal-Setup-v1.3.5.exe",
-      "size": 52489336
+      "name": "SugarPal-Setup-v1.3.6.exe",
+      "browser_download_url": "https://github.com/startime-ltk/SugarPal/releases/download/v1.3.6/SugarPal-Setup-v1.3.6.exe",
+      "size": 52533029
     }
   ]
 }
