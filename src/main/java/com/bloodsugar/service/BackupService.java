@@ -15,12 +15,18 @@ import java.nio.file.StandardCopyOption;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.Statement;
+import java.time.Instant;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.Enumeration;
 import java.util.List;
 import java.util.Properties;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 import java.util.zip.ZipInputStream;
@@ -55,9 +61,18 @@ public class BackupService {
 
     private static final DateTimeFormatter STAMP = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss");
     private static final DateTimeFormatter HUMAN = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+    private static final DateTimeFormatter DAY = DateTimeFormatter.ofPattern("yyyyMMdd");
 
     private static final String ENTRY_META = "backup-meta.txt";
     private static final String ENTRY_CONFIG = "config.properties";
+    private static final String ENTRY_SNAPSHOT_META = "snapshot-meta.txt";
+
+    /** 自动备份目录名（位于数据根目录下） */
+    public static final String AUTO_DIR = "auto-backups";
+    /** 自动备份保留份数 */
+    public static final int AUTO_KEEP = 7;
+    /** 恢复前快照目录名前缀 */
+    public static final String SNAPSHOT_PREFIX = "backup_before_restore_";
 
     /** 备份结果：目标文件 + 元信息 */
     public static class BackupResult {
@@ -72,17 +87,42 @@ public class BackupService {
         }
     }
 
-    /**
-     * 把当前数据备份到指定 zip 文件（覆盖同名的已存在文件）。
-     */
+    /** 「可恢复的备份」列表项 */
+    public static class BackupEntry {
+        /** 自动备份 / 恢复前快照 / 手动备份 */
+        public String kind = "";
+        public Path path;
+        public String timeText = "";
+        public int recordCount = -1;
+        public long size;
+
+        /** 列表里显示的说明，例如「自动备份 · 11 条 · 8.0 KB」 */
+        public String describe() {
+            return kind + " · " + (recordCount < 0 ? "条数未知" : recordCount + " 条")
+                    + " · " + formatSize(size);
+        }
+    }
+
+    // ==================== 备份 ====================
+
+    /** 备份到指定 zip（含配置文件） */
     public BackupResult backupTo(Path targetZip) throws BackupException {
+        return backupTo(targetZip, true);
+    }
+
+    /**
+     * 备份到指定 zip。
+     *
+     * @param includeConfig 是否把 config.properties 一起打包（自动备份不需要，避免多份密钥副本）
+     */
+    public BackupResult backupTo(Path targetZip, boolean includeConfig) throws BackupException {
         Path dataRoot = DataLocation.getStartupDataRoot();
         Path tempDir = null;
         try {
             tempDir = Files.createTempDirectory("sugarpal-backup-");
             Path snapshot = tempDir.resolve("snapshot.zip");
 
-            int recordCount = countRecords();
+            int recordCount = countRecordsNow();
             // H2 一致性快照
             try (Connection conn = DatabaseConfig.getConnection();
                  Statement st = conn.createStatement()) {
@@ -115,9 +155,9 @@ public class BackupService {
                     }
                 }
 
-                // 2) 配置文件（含 AI 模型设置；恢复时默认不覆盖，只作为留档）
+                // 2) 配置文件（留档用；恢复时默认不覆盖，避免冲掉用户后来改的 AI 设置）
                 Path cfg = dataRoot.resolve(ENTRY_CONFIG);
-                if (Files.exists(cfg)) {
+                if (includeConfig && Files.exists(cfg)) {
                     out.putNextEntry(new ZipEntry(ENTRY_CONFIG));
                     Files.copy(cfg, out);
                     out.closeEntry();
@@ -155,8 +195,126 @@ public class BackupService {
     }
 
     /**
-     * 检查一个 zip 是否是可用备份，并读出元信息。
+     * 每天首次启动时自动备份一份，只保留最近 {@value #AUTO_KEEP} 天。
+     *
+     * <p>这一条是给"从来不会主动点备份"的用户兜底的——它不需要用户记得任何事。
+     *
+     * @return 今天新生成的备份文件；今天已有则返回 null
      */
+    public Path autoBackupIfNeeded() {
+        try {
+            Path dir = DataLocation.getStartupDataRoot().resolve(AUTO_DIR);
+            Files.createDirectories(dir);
+            Path target = dir.resolve("auto_" + LocalDate.now().format(DAY) + ".zip");
+            if (Files.exists(target)) {
+                return null;
+            }
+            BackupResult r = backupTo(target, false);
+            pruneAuto(dir);
+            AppLog.info("每日自动备份完成: " + target.getFileName() + " (" + r.size + " 字节)");
+            return target;
+        } catch (Exception e) {
+            // 自动备份失败绝不能影响应用启动
+            AppLog.warn("每日自动备份失败（不影响使用）", e);
+            return null;
+        }
+    }
+
+    /** 只保留最近 AUTO_KEEP 份自动备份 */
+    private void pruneAuto(Path dir) {
+        try (Stream<Path> s = Files.list(dir)) {
+            List<Path> files = s.filter(p -> {
+                        String n = p.getFileName().toString();
+                        return n.startsWith("auto_") && n.endsWith(".zip");
+                    })
+                    .sorted(Comparator.comparing((Path p) -> p.getFileName().toString()).reversed())
+                    .collect(Collectors.toList());
+            for (int i = AUTO_KEEP; i < files.size(); i++) {
+                Files.deleteIfExists(files.get(i));
+                AppLog.info("清理旧自动备份: " + files.get(i).getFileName());
+            }
+        } catch (Exception e) {
+            AppLog.warn("清理旧自动备份失败", e);
+        }
+    }
+
+    /**
+     * 列出应用自己管理的可恢复备份：自动备份 + 恢复前快照，按名称（即时间）倒序。
+     */
+    public List<BackupEntry> listRestorable() {
+        List<BackupEntry> list = new ArrayList<>();
+        Path root = DataLocation.getStartupDataRoot();
+
+        Path autoDir = root.resolve(AUTO_DIR);
+        if (Files.isDirectory(autoDir)) {
+            try (Stream<Path> s = Files.list(autoDir)) {
+                s.filter(p -> p.getFileName().toString().endsWith(".zip")).forEach(p -> {
+                    BackupEntry e = new BackupEntry();
+                    e.kind = "自动备份";
+                    e.path = p;
+                    try {
+                        e.recordCount = inspect(p).recordCount;
+                    } catch (Exception ignored) {
+                        e.recordCount = -1;
+                    }
+                    fillEntry(e);
+                    list.add(e);
+                });
+            } catch (Exception e) {
+                AppLog.warn("列出自动备份失败", e);
+            }
+        }
+
+        if (Files.isDirectory(root)) {
+            try (Stream<Path> s = Files.list(root)) {
+                s.filter(p -> Files.isDirectory(p)
+                                && p.getFileName().toString().startsWith(SNAPSHOT_PREFIX))
+                        .forEach(p -> {
+                            BackupEntry e = new BackupEntry();
+                            e.kind = "恢复前快照";
+                            e.path = p;
+                            Path db = p.resolve("data.mv.db");
+                            if (Files.exists(db)) {
+                                e.size = db.toFile().length();
+                            }
+                            Path meta = p.resolve(ENTRY_SNAPSHOT_META);
+                            if (Files.exists(meta)) {
+                                try (InputStream in = Files.newInputStream(meta)) {
+                                    Properties pp = new Properties();
+                                    pp.load(in);
+                                    e.recordCount = Integer.parseInt(
+                                            pp.getProperty("recordCount", "-1").trim());
+                                } catch (Exception ignored) {
+                                    e.recordCount = -1;
+                                }
+                            }
+                            fillEntry(e);
+                            list.add(e);
+                        });
+            } catch (Exception e) {
+                AppLog.warn("列出恢复前快照失败", e);
+            }
+        }
+
+        list.sort(Comparator.comparing((BackupEntry e) -> e.path.getFileName().toString()).reversed());
+        return list;
+    }
+
+    private void fillEntry(BackupEntry e) {
+        try {
+            long t = Files.getLastModifiedTime(e.path).toMillis();
+            e.timeText = HUMAN.format(LocalDateTime.ofInstant(Instant.ofEpochMilli(t), ZoneId.systemDefault()));
+            if (e.size == 0 && Files.isRegularFile(e.path)) {
+                e.size = e.path.toFile().length();
+            }
+        } catch (Exception ignored) {
+            e.timeText = "时间未知";
+        }
+    }
+
+    // ==================== 检查与列表 ====================
+
+    /** 检查一个 zip 是否是可用备份，并读出元信息 */
     public BackupMeta inspect(Path zip) throws BackupException {
         if (zip == null || !Files.exists(zip)) {
             throw new BackupException("备份文件不存在");
@@ -208,40 +366,73 @@ public class BackupService {
      *
      * @return 恢复前自动保存的旧数据目录（出问题可以从这里还原）
      */
-    public Path restoreFrom(Path zip) throws BackupException {
-        BackupMeta meta = inspect(zip);
+    public Path restoreFrom(Path source) throws BackupException {
+        if (source == null || !Files.exists(source)) {
+            throw new BackupException("备份不存在：" + source);
+        }
+        // 恢复前快照是目录（里面直接放 data.mv.db），手动备份是 zip
+        if (Files.isDirectory(source)) {
+            Path db = source.resolve("data.mv.db");
+            if (!Files.exists(db) || db.toFile().length() <= 0) {
+                throw new BackupException("这个快照目录里没有可用的 data.mv.db，恢复中止（当前数据未受影响）");
+            }
+            return swapIn(db, source, false);
+        }
+
+        BackupMeta meta = inspect(source);
+        Path temp;
+        try {
+            temp = Files.createTempFile("sugarpal-restore-", ".mv.db");
+            boolean ok = false;
+            try (ZipInputStream in = new ZipInputStream(Files.newInputStream(source))) {
+                ZipEntry e;
+                while ((e = in.getNextEntry()) != null) {
+                    if (!e.isDirectory() && e.getName().equals(meta.dbEntryName)) {
+                        Files.copy(in, temp, StandardCopyOption.REPLACE_EXISTING);
+                        ok = true;
+                        break;
+                    }
+                }
+            }
+            if (!ok || Files.size(temp) <= 0) {
+                try {
+                    Files.deleteIfExists(temp);
+                } catch (IOException ignored) {
+                }
+                throw new BackupException("备份包里没找到可用的数据库，恢复中止（当前数据未受影响）");
+            }
+        } catch (BackupException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new BackupException("读取备份包失败：" + e.getMessage() + "（当前数据未受影响）", e);
+        }
+        return swapIn(temp, source, true);
+    }
+
+    /**
+     * 把准备好的数据库文件换入数据目录。
+     *
+     * @param preparedDb 待换入的数据库文件
+     * @param source     来源（仅用于日志与快照说明）
+     * @param tempIsOurs preparedDb 是否本方法创建的临时文件（结束时需要删掉）
+     * @return 恢复前数据的存放目录
+     */
+    private Path swapIn(Path preparedDb, Path source, boolean tempIsOurs) throws BackupException {
         Path dataRoot = DataLocation.getStartupDataRoot();
         String stamp = STAMP.format(LocalDateTime.now());
-        Path safeDir = dataRoot.resolve("backup_before_restore_" + stamp);
+        Path safeDir = dataRoot.resolve(SNAPSHOT_PREFIX + stamp);
         Path tempDb = dataRoot.resolve("restore-pending.mv.db");
         List<String> moved = new ArrayList<>();
         try {
             Files.createDirectories(dataRoot);
             Files.createDirectories(safeDir);
+            // 先落到自己的临时文件，避免 preparedDb 来自快照目录时被移动破坏
+            Files.copy(preparedDb, tempDb, StandardCopyOption.REPLACE_EXISTING);
 
-            // 1) 先把备份里的数据库解到临时文件——这一步失败，现有数据完全没动
-            boolean extracted = false;
-            try (ZipInputStream in = new ZipInputStream(Files.newInputStream(zip))) {
-                ZipEntry e;
-                while ((e = in.getNextEntry()) != null) {
-                    if (!e.isDirectory() && e.getName().equals(meta.dbEntryName)) {
-                        Files.copy(in, tempDb, StandardCopyOption.REPLACE_EXISTING);
-                        extracted = true;
-                        break;
-                    }
-                }
-            }
-            if (!extracted) {
-                throw new BackupException("备份包里没找到数据库文件，恢复中止（当前数据未受影响）");
-            }
-            if (Files.size(tempDb) <= 0) {
-                throw new BackupException("备份包里的数据库是空的，恢复中止（当前数据未受影响）");
-            }
-
-            // 2) 关连接池，释放 data.mv.db 的文件句柄
+            // 关池前统计当前条数，写进快照说明，列表里才能显示「N 条」
+            int currentCount = countRecordsNow();
             DatabaseConfig.closeDataSource();
 
-            // 3) 现有数据整体挪走（不是删除，随时可还原）
             for (String name : new String[]{"data.mv.db", "data.trace.db", ENTRY_CONFIG}) {
                 Path src = dataRoot.resolve(name);
                 if (Files.exists(src)) {
@@ -249,24 +440,18 @@ public class BackupService {
                     moved.add(name);
                 }
             }
+            writeSnapshotMeta(safeDir, currentCount, source);
+            Files.move(tempDb, dataRoot.resolve("data.mv.db"), StandardCopyOption.REPLACE_EXISTING);
 
-            // 4) 临时文件转正；失败则把旧文件搬回来
-            try {
-                Files.move(tempDb, dataRoot.resolve("data.mv.db"), StandardCopyOption.REPLACE_EXISTING);
-            } catch (Exception swapError) {
-                rollbackFrom(safeDir, dataRoot, moved);
-                throw new BackupException("写入数据库失败，已自动还原为恢复前的数据：" + swapError.getMessage(), swapError);
-            }
-
-            AppLog.info("数据恢复完成: 来源=" + zip + " 旧数据已存至 " + safeDir + " 挪走文件=" + moved);
+            AppLog.info("数据恢复完成: 来源=" + source + " 旧数据已存至 " + safeDir + " 挪走文件=" + moved);
             return safeDir;
 
-        } catch (BackupException e) {
-            AppLog.error("数据恢复失败", e);
-            throw e;
         } catch (Exception e) {
             rollbackFrom(safeDir, dataRoot, moved);
             AppLog.error("数据恢复失败（已尝试还原旧数据）", e);
+            if (e instanceof BackupException) {
+                throw (BackupException) e;
+            }
             throw new BackupException("恢复失败：" + e.getMessage()
                     + "\n\n恢复前的数据已保存在：" + safeDir, e);
         } finally {
@@ -274,6 +459,24 @@ public class BackupService {
                 Files.deleteIfExists(tempDb);
             } catch (IOException ignored) {
             }
+            if (tempIsOurs) {
+                try {
+                    Files.deleteIfExists(preparedDb);
+                } catch (IOException ignored) {
+                }
+            }
+        }
+    }
+
+    /** 把恢复前数据的条数写进快照目录，供「备份清单」显示 */
+    private void writeSnapshotMeta(Path dir, int count, Path source) {
+        try {
+            String meta = "recordCount=" + count + "\n"
+                    + "savedAt=" + HUMAN.format(LocalDateTime.now()) + "\n"
+                    + "replacedBy=" + source + "\n";
+            Files.write(dir.resolve(ENTRY_SNAPSHOT_META), meta.getBytes(StandardCharsets.UTF_8));
+        } catch (Exception e) {
+            AppLog.warn("写入快照说明失败", e);
         }
     }
 
@@ -292,15 +495,26 @@ public class BackupService {
     }
 
     /** 当前库里的记录条数；查不到返回 -1 */
-    private int countRecords() {
+    private int countRecordsNow() {
         try (Connection conn = DatabaseConfig.getConnection();
              Statement st = conn.createStatement();
              ResultSet rs = st.executeQuery("SELECT COUNT(*) FROM blood_sugar_records")) {
             return rs.next() ? rs.getInt(1) : -1;
         } catch (Exception e) {
-            AppLog.warn("备份时统计记录条数失败", e);
+            AppLog.warn("统计记录条数失败", e);
             return -1;
         }
+    }
+
+    /** 人类可读的文件大小，例如 8.0 KB */
+    public static String formatSize(long bytes) {
+        if (bytes < 1024) {
+            return bytes + " 字节";
+        }
+        if (bytes < 1024 * 1024) {
+            return String.format("%.1f KB", bytes / 1024.0);
+        }
+        return String.format("%.1f MB", bytes / 1024.0 / 1024.0);
     }
 
     /** 默认备份文件名，例如 糖伴备份_20261106_201530.zip */

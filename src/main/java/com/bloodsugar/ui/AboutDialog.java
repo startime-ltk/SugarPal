@@ -4,6 +4,7 @@ import com.bloodsugar.config.DataLocation;
 import com.bloodsugar.config.UpdateConfig;
 import com.bloodsugar.config.VersionInfo;
 import com.bloodsugar.service.BackupService;
+import com.bloodsugar.service.BloodSugarService;
 import com.bloodsugar.service.UpdateService;
 import com.bloodsugar.service.UpdateService.UpdateException;
 import com.bloodsugar.service.UpdateService.UpdateInfo;
@@ -19,6 +20,7 @@ import javafx.scene.control.ButtonType;
 import javafx.scene.control.Dialog;
 import javafx.scene.control.DialogPane;
 import javafx.scene.control.Label;
+import javafx.scene.control.ScrollPane;
 import javafx.scene.control.TextField;
 import javafx.scene.effect.DropShadow;
 import javafx.scene.layout.HBox;
@@ -33,6 +35,7 @@ import javafx.stage.Stage;
 
 import java.io.File;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -170,20 +173,20 @@ public class AboutDialog {
         backupTitle.setFont(Font.font("Microsoft YaHei", FontWeight.BOLD, 14));
         backupTitle.setTextFill(Color.web(COLOR_TITLE));
 
-        Label backupHint = new Label("把血糖数据打包成一个 .zip 存到别处；换电脑、重装系统后可以一键还原。");
+        Label backupHint = new Label("每天首次启动会自动留一份快照（保留最近 7 天）；也可以手动导出到 U 盘或网盘。");
         backupHint.setWrapText(true);
         backupHint.setFont(Font.font("Microsoft YaHei", 11));
         backupHint.setTextFill(Color.web(COLOR_GRAY));
 
-        Button backupBtn = smallGrayButton("备份数据…");
-        Button restoreBtn = smallGrayButton("从备份恢复…");
+        Button backupBtn = smallGrayButton("立即备份…");
+        Button restoreBtn = smallGrayButton("备份与恢复…");
         Label backupStatus = new Label("");
         backupStatus.setFont(Font.font("Microsoft YaHei", 11));
         backupStatus.setTextFill(Color.web(COLOR_GRAY));
         backupStatus.setWrapText(true);
 
         backupBtn.setOnAction(e -> runBackupFlow(owner, backupBtn, restoreBtn, backupStatus));
-        restoreBtn.setOnAction(e -> runRestoreFlow(owner, backupBtn, restoreBtn, backupStatus));
+        restoreBtn.setOnAction(e -> showBackupListDialog(owner, backupBtn, restoreBtn, backupStatus));
 
         HBox backupRow = new HBox(8, backupBtn, restoreBtn, backupStatus);
         backupRow.setAlignment(Pos.CENTER_LEFT);
@@ -334,42 +337,184 @@ public class AboutDialog {
         }, "sugarpal-backup").start();
     }
 
-    /** 恢复：选文件 → 校验并展示备份信息 → 二次确认 → 后台恢复 → 提示重启 */
-    private static void runRestoreFlow(Stage owner, Button backupBtn, Button restoreBtn, Label status) {
+    /**
+     * 「备份与恢复」清单：把自动备份、恢复前快照都列出来，可以直接选任意一个恢复。
+     *
+     * <p>这样"撤销上一次恢复"就不需要单独的按钮了——恢复前生成的快照本身就在列表里。
+     */
+    private static void showBackupListDialog(Stage owner, Button backupBtn, Button restoreBtn, Label status) {
+        Dialog<ButtonType> dialog = new Dialog<>();
+        dialog.initOwner(owner);
+        dialog.setTitle("备份与恢复");
+        dialog.setHeaderText(null);
+        DialogPane pane = dialog.getDialogPane();
+        styleDialogPane(pane);
+        ButtonType closeType = new ButtonType("关闭", ButtonBar.ButtonData.CANCEL_CLOSE);
+        pane.getButtonTypes().add(closeType);
+
+        VBox box = new VBox(10);
+        box.setPadding(new Insets(12));
+        box.setPrefWidth(580);
+
+        Label title = new Label("可恢复的备份");
+        title.setFont(Font.font("Microsoft YaHei", FontWeight.BOLD, 15));
+        title.setTextFill(Color.web(COLOR_TITLE));
+
+        Label hint = new Label("「自动备份」每天首次启动时生成，保留最近 "
+                + BackupService.AUTO_KEEP + " 天；「恢复前快照」是每次恢复时自动留存的旧数据。"
+                + "选任意一条都能回到那个时间点。");
+        hint.setWrapText(true);
+        hint.setFont(Font.font("Microsoft YaHei", 11));
+        hint.setTextFill(Color.web(COLOR_GRAY));
+
+        VBox rows = new VBox(6);
+        List<BackupService.BackupEntry> entries;
+        try {
+            entries = new BackupService().listRestorable();
+        } catch (Exception ex) {
+            AppLog.warn("读取备份列表失败", ex);
+            entries = new java.util.ArrayList<>();
+        }
+        if (entries.isEmpty()) {
+            Label empty = new Label("暂时没有可恢复的备份。点「立即备份…」可以先做一个。");
+            empty.setFont(Font.font("Microsoft YaHei", 12));
+            empty.setTextFill(Color.web(COLOR_GRAY));
+            rows.getChildren().add(empty);
+        } else {
+            for (BackupService.BackupEntry e : entries) {
+                rows.getChildren().add(buildBackupRow(owner, dialog, e, backupBtn, restoreBtn, status));
+            }
+        }
+
+        ScrollPane scroll = new ScrollPane(rows);
+        scroll.setFitToWidth(true);
+        scroll.setPrefHeight(250);
+        scroll.setStyle("-fx-background-color: transparent; -fx-background: transparent;");
+
+        Button pickBtn = smallGrayButton("选择其他备份文件…");
+        pickBtn.setOnAction(e -> {
+            dialog.close();
+            pickAndRestore(owner, backupBtn, restoreBtn, status);
+        });
+
+        box.getChildren().addAll(title, hint, scroll, pickBtn);
+        pane.setContent(box);
+
+        Button closeBtn = (Button) pane.lookupButton(closeType);
+        if (closeBtn != null) {
+            stylePinkClose(closeBtn);
+        }
+        dialog.showAndWait();
+    }
+
+    /** 清单里的一行：类型 / 时间 / 条数与大小 / 恢复按钮 */
+    private static HBox buildBackupRow(Stage owner, Dialog<ButtonType> dialog,
+                                       BackupService.BackupEntry e,
+                                       Button backupBtn, Button restoreBtn, Label status) {
+        boolean auto = e.kind.startsWith("自动");
+
+        Label kind = new Label(e.kind);
+        kind.setFont(Font.font("Microsoft YaHei", FontWeight.BOLD, 12));
+        kind.setTextFill(Color.web(auto ? COLOR_GREEN_DARK : COLOR_GRAY_DARK));
+        kind.setMinWidth(88);
+
+        Label time = new Label(e.timeText);
+        time.setFont(Font.font("Microsoft YaHei", 12));
+        time.setTextFill(Color.web(COLOR_TEXT));
+        time.setMinWidth(140);
+
+        Label detail = new Label((e.recordCount < 0 ? "条数未知" : e.recordCount + " 条")
+                + " · " + BackupService.formatSize(e.size));
+        detail.setFont(Font.font("Microsoft YaHei", 11));
+        detail.setTextFill(Color.web(COLOR_GRAY));
+
+        Region spacer = new Region();
+        HBox.setHgrow(spacer, Priority.ALWAYS);
+
+        Button restore = smallGrayButton("恢复");
+        restore.setOnAction(ev -> {
+            dialog.close();
+            confirmAndRestore(owner, e.path, e.kind, e.recordCount, e.timeText,
+                    backupBtn, restoreBtn, status);
+        });
+
+        HBox row = new HBox(10, kind, time, detail, spacer, restore);
+        row.setAlignment(Pos.CENTER_LEFT);
+        row.setPadding(new Insets(6, 8, 6, 8));
+        row.setStyle("-fx-background-color: #FDFEFB; -fx-background-radius: 10; "
+                + "-fx-border-color: " + COLOR_BORDER + "; -fx-border-radius: 10;");
+        return row;
+    }
+
+    /** 手动挑一个 zip 备份文件来恢复 */
+    private static void pickAndRestore(Stage owner, Button backupBtn, Button restoreBtn, Label status) {
         FileChooser chooser = new FileChooser();
         chooser.setTitle("选择要恢复的备份文件");
         chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter("糖伴备份文件 (*.zip)", "*.zip"));
+        Path dataRoot = DataLocation.getStartupDataRoot();
+        if (dataRoot.toFile().isDirectory()) {
+            chooser.setInitialDirectory(dataRoot.toFile());
+        }
         File src = chooser.showOpenDialog(owner);
         if (src == null) {
             return;
         }
-
-        BackupService svc = new BackupService();
         BackupService.BackupMeta meta;
         try {
-            meta = svc.inspect(src.toPath());
+            meta = new BackupService().inspect(src.toPath());
         } catch (Exception ex) {
             showInfo(owner, "无法恢复", ex.getMessage());
             return;
         }
+        String kind = meta.official ? "手动备份（" + (meta.version.isEmpty() ? "版本未知" : "v" + meta.version) + "）"
+                : "手动备份（无说明文件）";
+        String time = meta.createdAt.isEmpty() ? "时间未知" : meta.createdAt;
+        confirmAndRestore(owner, src.toPath(), kind, meta.recordCount, time, backupBtn, restoreBtn, status);
+    }
 
-        StringBuilder sb = new StringBuilder();
-        sb.append("备份文件：").append(src.getName()).append("\n");
-        if (meta.official) {
-            sb.append("备份时间：").append(meta.createdAt.isEmpty() ? "未知" : meta.createdAt).append("\n");
-            sb.append("糖伴版本：").append(meta.version.isEmpty() ? "未知" : meta.version).append("\n");
-            sb.append("记录条数：").append(meta.recordCount < 0 ? "未知" : meta.recordCount + " 条").append("\n");
-        } else {
-            sb.append("（这个压缩包里没有备份说明文件，将按原始数据库恢复）\n");
+    /** 恢复前的统一确认：先对比「当前数据」和「备份数据」，差异大就红字警告 */
+    private static void confirmAndRestore(Stage owner, Path source, String kindLabel, int backupCount,
+                                          String backupTime, Button backupBtn, Button restoreBtn, Label status) {
+        int currentCount = -1;
+        try {
+            currentCount = new BloodSugarService().getAllRecords().size();
+        } catch (Exception ex) {
+            AppLog.warn("恢复前统计当前记录数失败", ex);
         }
-        sb.append("\n恢复会覆盖当前的全部血糖记录。");
-        sb.append("\n恢复前，当前数据会自动另存到数据目录下的 backup_before_restore_* 文件夹，不会丢。");
+
+        VBox content = new VBox(6);
+        content.setPrefWidth(470);
+        Label l1 = infoLine("备份来源：" + kindLabel);
+        Label l2 = infoLine("备份时间：" + backupTime);
+        Label l3 = infoLine("备份记录：" + (backupCount < 0 ? "未知" : backupCount + " 条"));
+        Label l4 = infoLine("当前数据：" + (currentCount < 0 ? "未知" : currentCount + " 条"));
+
+        Label warn = new Label();
+        warn.setWrapText(true);
+        warn.setFont(Font.font("Microsoft YaHei", 12));
+        if (currentCount >= 0 && backupCount >= 0 && backupCount < currentCount) {
+            warn.setText("注意：这个备份比当前数据少 " + (currentCount - backupCount)
+                    + " 条记录，恢复后这些记录会从主界面消失。\n"
+                    + "（当前数据会先另存为「恢复前快照」，之后仍可在清单里选回来）");
+            warn.setTextFill(Color.web("#C0392B"));
+        } else if (currentCount >= 0 && backupCount > currentCount) {
+            warn.setText("恢复后会多出 " + (backupCount - currentCount) + " 条记录。");
+            warn.setTextFill(Color.web(COLOR_GREEN_DARK));
+        } else if (currentCount >= 0 && backupCount >= 0) {
+            warn.setText("记录条数与当前一致。");
+            warn.setTextFill(Color.web(COLOR_GRAY));
+        } else {
+            warn.setText("条数无法确认，请自行判断是否继续。");
+            warn.setTextFill(Color.web(COLOR_GRAY));
+        }
+
+        content.getChildren().addAll(l1, l2, l3, l4, warn);
 
         Alert confirm = new Alert(Alert.AlertType.CONFIRMATION);
         confirm.initOwner(owner);
         confirm.setTitle("确认恢复");
         confirm.setHeaderText("要用这个备份覆盖当前数据吗？");
-        confirm.setContentText(sb.toString());
+        confirm.getDialogPane().setContent(content);
         ButtonType okBtn = new ButtonType("确认恢复", ButtonBar.ButtonData.OK_DONE);
         ButtonType cancelBtn = new ButtonType("取消", ButtonBar.ButtonData.CANCEL_CLOSE);
         confirm.getButtonTypes().setAll(okBtn, cancelBtn);
@@ -385,7 +530,7 @@ public class AboutDialog {
 
         new Thread(() -> {
             try {
-                Path safeDir = svc.restoreFrom(src.toPath());
+                Path safeDir = new BackupService().restoreFrom(source);
                 Platform.runLater(() -> {
                     status.setText("恢复完成，需重启生效");
                     offerRestart(owner, safeDir);
@@ -400,6 +545,23 @@ public class AboutDialog {
                 });
             }
         }, "sugarpal-restore").start();
+    }
+
+    private static Label infoLine(String text) {
+        Label l = new Label(text);
+        l.setFont(Font.font("Microsoft YaHei", 12));
+        l.setTextFill(Color.web(COLOR_TEXT));
+        return l;
+    }
+
+    /** 粉色关闭按钮样式 */
+    private static void stylePinkClose(Button btn) {
+        btn.setStyle("-fx-background-color: linear-gradient(to bottom, " + COLOR_PINK_LIGHT + ", " + COLOR_PINK + "); "
+                + "-fx-text-fill: #8C3B52; -fx-font-size: 13px; -fx-padding: 8 20; "
+                + "-fx-background-radius: 18; -fx-border-radius: 18; "
+                + "-fx-border-color: #E87FA5; -fx-border-width: 0 0 3 0; "
+                + "-fx-cursor: hand; -fx-font-weight: bold;");
+        btn.setEffect(new DropShadow(4, 2, 3, Color.web(COLOR_PINK_LIGHT)));
     }
 
     /**

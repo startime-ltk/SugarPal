@@ -1,6 +1,7 @@
 package com.bloodsugar;
 
 import com.bloodsugar.config.DataLocation;
+import com.bloodsugar.service.BackupService;
 import com.bloodsugar.ui.MainUI;
 import com.bloodsugar.util.AppLog;
 import javafx.application.Application;
@@ -25,6 +26,12 @@ public class BloodSugarApp extends Application {
         stage.setMinWidth(900);
         stage.setMinHeight(550);
         stage.show();
+
+        // 每天首次启动自动备份一份（后台执行，不拖慢开窗；失败也不影响使用）
+        Thread autoBackup = new Thread(() -> new BackupService().autoBackupIfNeeded(),
+                "sugarpal-auto-backup");
+        autoBackup.setDaemon(true);
+        autoBackup.start();
     }
 
     public static void main(String[] args) {
