@@ -2,6 +2,7 @@ package com.bloodsugar.service;
 
 import com.bloodsugar.config.AiConfig;
 import com.bloodsugar.model.BloodSugarRecord;
+import com.bloodsugar.util.AppLog;
 import com.bloodsugar.util.PeriodClassifier;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
@@ -32,12 +33,24 @@ public class AiSuggestionService {
 
     /** 业务异常，message 都是可直接展示给用户的友好中文 */
     public static class AiException extends Exception {
+        /** 是否属于"可以重试"的临时故障（网络抖动、超时、限流、服务端错误） */
+        private final boolean retryable;
+
         public AiException(String message) {
-            super(message);
+            this(message, null, false);
         }
 
         public AiException(String message, Throwable cause) {
+            this(message, cause, false);
+        }
+
+        public AiException(String message, Throwable cause, boolean retryable) {
             super(message, cause);
+            this.retryable = retryable;
+        }
+
+        public boolean isRetryable() {
+            return retryable;
         }
     }
 
@@ -45,6 +58,11 @@ public class AiSuggestionService {
     private static final int MAX_RECORDS = 30;
     private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(15);
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(60);
+
+    /** 最多尝试次数（含首次） */
+    private static final int MAX_ATTEMPTS = 3;
+    /** 重试基础等待毫秒，第 n 次重试等待 BASE * n */
+    private static final long RETRY_BASE_DELAY_MS = 1200;
 
     private final HttpClient client = HttpClient.newBuilder()
             .connectTimeout(CONNECT_TIMEOUT)
@@ -93,28 +111,56 @@ public class AiSuggestionService {
             throw new AiException("接口地址格式不正确，请在设置中检查", e);
         }
 
+        // 网络抖动、限流、服务端临时故障很常见，自动重试；
+        // 而 Key 错、地址错这类参数问题重试也没用，直接把原因告诉用户。
+        AiException last = null;
+        for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+            try {
+                return sendOnce(request);
+            } catch (AiException e) {
+                last = e;
+                if (!e.isRetryable() || attempt >= MAX_ATTEMPTS) {
+                    throw e;
+                }
+                AppLog.warn("AI 请求失败（第 " + attempt + "/" + MAX_ATTEMPTS + " 次），准备重试：" + e.getMessage());
+                try {
+                    Thread.sleep(RETRY_BASE_DELAY_MS * attempt);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    throw new AiException("请求被中断，请重试", ie);
+                }
+            }
+        }
+        throw last != null ? last : new AiException("请求失败，请稍后重试");
+    }
+
+    /** 发一次请求并解析结果；临时故障（超时/连不上/限流/5xx）标记为可重试 */
+    private String sendOnce(HttpRequest request) throws AiException {
         HttpResponse<String> response;
         try {
             response = client.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
         } catch (ConnectException e) {
-            throw new AiException("无法连接模型服务，请检查网络或接口地址", e);
+            throw new AiException("无法连接模型服务，请检查网络或接口地址", e, true);
         } catch (HttpTimeoutException e) {
-            throw new AiException("请求超时，请检查网络后稍后重试", e);
+            throw new AiException("请求超时，请检查网络后稍后重试", e, true);
         } catch (IOException e) {
-            throw new AiException("网络请求失败：" + e.getMessage(), e);
+            throw new AiException("网络请求失败：" + e.getMessage(), e, true);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new AiException("请求被中断，请重试", e);
         }
 
-        if (response.statusCode() >= 400) {
-            throw new AiException("模型接口返回错误（HTTP " + response.statusCode() + "）："
-                    + extractError(response.body()));
+        int code = response.statusCode();
+        if (code >= 400) {
+            // 429 限流与 5xx 服务端错误属于临时故障，值得重试；其余 4xx 重试没有意义
+            boolean retryable = code == 429 || code >= 500;
+            throw new AiException("模型接口返回错误（HTTP " + code + "）："
+                    + extractError(response.body()), null, retryable);
         }
 
         String content = parseContent(response.body());
         if (content == null || content.isBlank()) {
-            throw new AiException("模型返回内容为空，请稍后重试");
+            throw new AiException("模型返回内容为空，请稍后重试", null, true);
         }
         return content.trim();
     }

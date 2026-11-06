@@ -16,7 +16,9 @@ import com.bloodsugar.service.CsvImportService;
 import com.bloodsugar.service.ExportService;
 import com.bloodsugar.service.HealthSummaryPdfExporter;
 import com.bloodsugar.service.HealthSummaryService;
+import com.bloodsugar.util.AppLog;
 import com.bloodsugar.util.PeriodClassifier;
+import javafx.concurrent.Task;
 
 import javafx.animation.Animation;
 import javafx.animation.KeyFrame;
@@ -145,8 +147,7 @@ public class MainUI {
         root.setLeft(buildLeftPanel());
         root.setCenter(buildChartPanel());
         root.setBottom(buildStatusBar());
-        refreshAll();
-        refreshMealPanelFromDb();
+        refreshAllAsync();
         startMealRolloverTimer();
         Scene scene = new Scene(root, 1290, 760);
         // 表格渲染完成后设置表头糖果渐变圆角背景
@@ -158,6 +159,86 @@ public class MainUI {
             }
         });
         return scene;
+    }
+
+    /**
+     * 把耗时操作放到后台线程执行，完成后自动回到界面线程。
+     *
+     * <p>为什么需要：之前读全表、解析 5000 行 CSV、逐条导入这些操作都跑在 JavaFX 界面线程上，
+     * 数据一多窗口就"未响应"——演示时尤其难看。这里统一收口：后台跑 + 弹出进度提示 + 完成后回调。
+     *
+     * @param title     进度提示标题
+     * @param work      后台执行的耗时逻辑（可能抛异常）
+     * @param onSuccess 成功回调，在界面线程执行
+     */
+    private <T> void runAsync(String title, java.util.concurrent.Callable<T> work,
+                               java.util.function.Consumer<T> onSuccess) {
+        runAsync(title, work, onSuccess, ex ->
+                showAlert(title + "失败：\n" + (ex == null ? "未知错误" : String.valueOf(ex.getMessage()))));
+    }
+
+    /**
+     * 同上，但允许调用方自定义失败处理（默认是统一弹窗提示）。
+     */
+    private <T> void runAsync(String title, java.util.concurrent.Callable<T> work,
+                               java.util.function.Consumer<T> onSuccess,
+                               java.util.function.Consumer<Throwable> onError) {
+        Stage owner = currentStage();
+
+        ProgressIndicator indicator = new ProgressIndicator();
+        indicator.setPrefSize(40, 40);
+        Label msg = new Label(title + "…");
+        msg.setStyle("-fx-font-size: 13px; -fx-text-fill: " + COLOR_TEXT + ";");
+        VBox box = new VBox(12, indicator, msg);
+        box.setAlignment(Pos.CENTER);
+        box.setPadding(new Insets(26, 44, 26, 44));
+        box.setStyle("-fx-background-color: #FDFEFB; -fx-background-radius: 14;");
+
+        Dialog<Void> progress = new Dialog<>();
+        progress.initOwner(owner);
+        progress.setTitle(title);
+        progress.getDialogPane().setContent(box);
+        progress.getDialogPane().getButtonTypes().add(ButtonType.CANCEL);
+        progress.setResultConverter(b -> null);
+
+        Task<T> task = new Task<>() {
+            @Override
+            protected T call() throws Exception {
+                return work.call();
+            }
+        };
+        task.setOnSucceeded(e -> {
+            progress.close();
+            try {
+                onSuccess.accept(task.getValue());
+            } catch (Exception ex) {
+                AppLog.error("后台任务回调失败：" + title, ex);
+                showAlert(title + "结果处理失败：\n" + (ex == null ? "未知错误" : String.valueOf(ex.getMessage())));
+            }
+        });
+        task.setOnFailed(e -> {
+            progress.close();
+            Throwable ex = task.getException();
+            AppLog.error("后台任务失败：" + title, ex);
+            onError.accept(ex);
+        });
+
+        Thread th = new Thread(task, "sugarpal-async-" + title);
+        th.setDaemon(true);
+        th.start();
+        progress.show();
+    }
+
+    /** 取主窗口 Stage（作为弹窗的 owner）；取不到就返回 null */
+    private Stage currentStage() {
+        try {
+            if (table != null && table.getScene() != null && table.getScene().getWindow() != null) {
+                return (Stage) table.getScene().getWindow();
+            }
+        } catch (Exception e) {
+            AppLog.warn("获取主窗口 Stage 失败", e);
+        }
+        return null;
     }
 
     // 顶部工具栏
@@ -720,6 +801,7 @@ public class MainUI {
         try {
             records = service.getAllRecords();
         } catch (SQLException e) {
+            AppLog.error("读取全部记录失败，健康趋势图将显示为空", e);
             records = new java.util.ArrayList<>();
         }
         records.sort(Comparator.comparing(BloodSugarRecord::getRecordTime,
@@ -803,12 +885,13 @@ public class MainUI {
         }
     }
 
-    /** 解析血压字符串"收缩压/舒张压"，返回收缩压；解析失败返回 -1 */
+    /** 解析血压字符串"收缩压/舒张压"，返回收缩压；解析失败返回 -1（图表会过滤掉非正值） */
     private double parseSystolic(String bp) {
         if (bp == null || bp.isBlank()) return -1;
         try {
             return Double.parseDouble(bp.split("/")[0].trim());
         } catch (Exception e) {
+            AppLog.warn("血压字段无法解析，已跳过该点: " + bp);
             return -1;
         }
     }
@@ -878,7 +961,9 @@ public class MainUI {
             if (savedMealTime != null) {
                 best = updateBest(best, savedMealTime, "用餐", recordTime);
             }
-        } catch (SQLException ignored) { }
+        } catch (SQLException e) {
+            AppLog.warn("读取已保存的用餐时间失败，餐别可能不准", e);
+        }
 
         // 再看数据库当天（凌晨4点起）的历史用餐记录，没有餐名就统一叫"用餐"；
         // 当天没吃过就返回 null，最终显示"空腹"
@@ -887,7 +972,9 @@ public class MainUI {
             if (dbMealTime != null) {
                 best = updateBest(best, dbMealTime, "用餐", recordTime);
             }
-        } catch (SQLException ignored) { }
+        } catch (SQLException e) {
+            AppLog.warn("读取历史用餐记录失败，餐别可能不准", e);
+        }
 
         return best;
     }
@@ -935,6 +1022,7 @@ public class MainUI {
             LocalDate businessToday = PeriodClassifier.getBusinessDate(LocalDateTime.now());
             return LocalDateTime.of(businessToday, LocalTime.parse(s.replace('.', ':')));
         } catch (Exception e) {
+            AppLog.warn("用餐时间输入无法解析: " + s);
             return null;
         }
     }
@@ -1381,18 +1469,25 @@ public class MainUI {
     private void showExportDialog(Stage owner) {
         // 导出范围保持原语义：选中"全部"时导出全部记录（不受主界面近8条展示限制），
         // 选中具体日期时导出该日记录
-        List<BloodSugarRecord> fetched;
-        try {
-            String selected = dateFilterCombo.getValue();
-            if (selected == null || "全部".equals(selected)) {
-                fetched = service.getAllRecords();
-            } else {
-                fetched = currentChartRecords;
+        final String selected = dateFilterCombo.getValue();
+        // 全表读取可能较慢，放后台线程，别让界面看起来卡死
+        runAsync("正在读取血糖记录", () -> {
+            try {
+                if (selected == null || "全部".equals(selected)) {
+                    return service.getAllRecords();
+                }
+                return currentChartRecords;
+            } catch (SQLException ex) {
+                // 这里不能静默降级成"只导最近几条"：用户会拿着一份残缺报告去看医生，
+                // 而且完全不知道全量导出其实失败了。宁可中止并说明原因。
+                AppLog.error("导出前读取全部记录失败，已中止导出", ex);
+                throw new RuntimeException("读取血糖记录失败，导出已中止。\n错误：" + ex.getMessage()
+                        + "\n\n请检查数据库文件是否被占用或损坏后再试。", ex);
             }
-        } catch (SQLException ex) {
-            fetched = currentChartRecords;
-        }
-        final List<BloodSugarRecord> records = fetched;
+        }, records -> showExportDialogWith(owner, records));
+    }
+
+    private void showExportDialogWith(Stage owner, List<BloodSugarRecord> records) {
         if (records == null || records.isEmpty()) {
             showAlert("暂无记录可导出，请先添加血糖数据");
             return;
@@ -1789,8 +1884,15 @@ public class MainUI {
             showAlert("暂无记录，请先添加血糖数据");
             return;
         }
+        // 里面要做 4 次全量查询（HbA1c 估算 + 近 30 天健康数据），放后台线程
+        runAsync("正在生成总结报告", () -> buildSummaryText(currentChartRecords),
+                text -> showSummaryResult(owner, text));
+    }
 
-        List<BloodSugarRecord> records = currentChartRecords;
+    /**
+     * 生成总结报告文本。只做查询与计算、不碰任何界面控件，因此可以安全地跑在后台线程。
+     */
+    private String buildSummaryText(List<BloodSugarRecord> records) {
         int total = records.size();
 
         // 基础统计
@@ -1896,12 +1998,17 @@ public class MainUI {
         sb.append(insulinRisk).append("\n\n");
         sb.append("⚠ 以上为程序自动分析，仅供参考，不能替代医生诊断。如有疑虑请及时就医。");
 
+        return sb.toString();
+    }
+
+    /** 展示总结报告（界面线程） */
+    private void showSummaryResult(Stage owner, String text) {
         Alert alert = new Alert(Alert.AlertType.INFORMATION);
         alert.initOwner(owner);
         alert.setTitle("血糖总结报告");
         alert.setHeaderText("统计数据与风险评估");
 
-        TextArea textArea = new TextArea(sb.toString());
+        TextArea textArea = new TextArea(text);
         textArea.setEditable(false);
         textArea.setWrapText(true);
         textArea.setFont(Font.font("Microsoft YaHei", 13));
@@ -2071,42 +2178,90 @@ public class MainUI {
 
     private void refreshDates() {
         try {
-            String current = dateFilterCombo.getValue();
-            dateFilterCombo.getItems().clear();
-            dateFilterCombo.getItems().add("全部");
-            dateFilterCombo.getItems().addAll(service.getRecordDates());
-            if (current != null) dateFilterCombo.setValue(current);
-            else dateFilterCombo.setValue("全部");
-        } catch (SQLException ignored) {
+            applyDates(service.getRecordDates(), dateFilterCombo.getValue());
+        } catch (SQLException e) {
+            AppLog.warn("刷新日期下拉框失败，将保留上一次的结果", e);
         }
+    }
+
+    /** 把日期列表填进下拉框（必须在界面线程执行） */
+    private void applyDates(List<String> dates, String current) {
+        dateFilterCombo.getItems().clear();
+        dateFilterCombo.getItems().add("全部");
+        dateFilterCombo.getItems().addAll(dates);
+        if (current != null) dateFilterCombo.setValue(current);
+        else dateFilterCombo.setValue("全部");
     }
 
     private void refreshTableAndChart() {
         try {
-            String selected = dateFilterCombo.getValue();
-            if (selected == null || "全部".equals(selected)) {
-                // 主页面默认只展示最近 8 条记录；更早数据通过日历查看
-                currentChartRecords = service.getLatestRecords(8);
-            } else {
-                LocalDate date = LocalDate.parse(selected);
-                // 按凌晨 4 点的业务日边界筛选：[当天4:00, 次日4:00)
-                currentChartRecords = service.getRecordsByDateRange(
-                        PeriodClassifier.getBusinessDayStart(date),
-                        PeriodClassifier.getBusinessDayEnd(date));
-            }
-
-            table.setItems(FXCollections.observableArrayList(currentChartRecords));
-            // 清理旧记录的复选框状态
-            Set<Integer> currentIds = currentChartRecords.stream()
-                    .map(BloodSugarRecord::getId).collect(Collectors.toSet());
-            rowSelected.keySet().retainAll(currentIds);
-            // 图表按时间升序（从左到右递增）
-            List<BloodSugarRecord> chartData = new ArrayList<>(currentChartRecords);
-            chartData.sort(Comparator.comparing(BloodSugarRecord::getRecordTime));
-            updateChart(chartData);
+            applyChartRecords(queryChartRecords(dateFilterCombo.getValue()));
         } catch (Exception e) {
             statusLabel.setText("加载失败：" + e.getMessage());
         }
+    }
+
+    /** 查询主界面要展示的记录（可在任意线程执行） */
+    private List<BloodSugarRecord> queryChartRecords(String selected) throws SQLException {
+        if (selected == null || "全部".equals(selected)) {
+            // 主页面默认只展示最近 8 条记录；更早数据通过日历查看
+            return service.getLatestRecords(8);
+        }
+        LocalDate date = LocalDate.parse(selected);
+        // 按凌晨 4 点的业务日边界筛选：[当天4:00, 次日4:00)
+        return service.getRecordsByDateRange(
+                PeriodClassifier.getBusinessDayStart(date),
+                PeriodClassifier.getBusinessDayEnd(date));
+    }
+
+    /** 把记录渲染到表格与图表（必须在界面线程执行） */
+    private void applyChartRecords(List<BloodSugarRecord> rows) {
+        currentChartRecords = rows;
+        table.setItems(FXCollections.observableArrayList(currentChartRecords));
+        // 清理旧记录的复选框状态
+        Set<Integer> currentIds = currentChartRecords.stream()
+                .map(BloodSugarRecord::getId).collect(Collectors.toSet());
+        rowSelected.keySet().retainAll(currentIds);
+        // 图表按时间升序（从左到右递增）
+        List<BloodSugarRecord> chartData = new ArrayList<>(currentChartRecords);
+        chartData.sort(Comparator.comparing(BloodSugarRecord::getRecordTime));
+        updateChart(chartData);
+    }
+
+    /**
+     * 启动时用：把查库放到后台线程，拿到结果后再回到界面线程渲染。
+     * 避免窗口刚打开就因为同步查库而"未响应"。
+     */
+    private void refreshAllAsync() {
+        final String selected = dateFilterCombo.getValue();
+        Thread th = new Thread(() -> {
+            List<String> dates = null;
+            List<BloodSugarRecord> rows = null;
+            try {
+                dates = service.getRecordDates();
+                rows = queryChartRecords(selected);
+            } catch (Exception ex) {
+                AppLog.warn("启动加载数据失败", ex);
+            }
+            final List<String> fDates = dates;
+            final List<BloodSugarRecord> fRows = rows;
+            Platform.runLater(() -> {
+                try {
+                    if (fDates != null) {
+                        applyDates(fDates, selected);
+                    }
+                    if (fRows != null) {
+                        applyChartRecords(fRows);
+                    }
+                    refreshMealPanelFromDb();
+                } catch (Exception ex) {
+                    // 渲染阶段的异常也必须留痕，否则界面会莫名其妙是空的
+                    AppLog.error("启动数据渲染失败", ex);
+                }
+            });
+        }, "sugarpal-startup-load");
+        th.setDaemon(true);
+        th.start();
     }
 
     // 趋势曲线
@@ -2904,8 +3059,8 @@ public class MainUI {
                     new FileChooser.ExtensionFilter("所有文件", "*.*"));
             File f = chooser.showOpenDialog(owner);
             if (f == null) return;
-            try {
-                CsvImportService.ImportPreview p = csvImportService.preview(f);
+            // 解析大文件（最多 5000 行，且每行要查一次库去重）很慢，放后台线程
+            runAsync("正在解析文件", () -> csvImportService.preview(f), p -> {
                 holder[0] = p;
                 fileLb.setText("已选择：" + f.getAbsolutePath());
                 int show = Math.min(50, p.rows.size());
@@ -2915,13 +3070,13 @@ public class MainUI {
                 sumLb.setText(sb.toString() + "\n" + CsvImportService.summaryText(p)
                         + "（预览显示前 " + show + " 行）");
                 importBtn.setDisable(p.importable == 0);
-            } catch (Exception ex) {
+            }, ex -> {
                 holder[0] = null;
                 importBtn.setDisable(true);
                 previewTable.setItems(FXCollections.observableArrayList());
                 sumLb.setText("解析失败，请确认文件格式后重试。");
-                showAlert("解析失败：" + ex.getMessage());
-            }
+                showAlert("解析失败：" + (ex == null ? "未知错误" : ex.getMessage()));
+            });
         });
 
         tplBtn.setOnAction(e -> {
@@ -2949,39 +3104,45 @@ public class MainUI {
         importBtn.setOnAction(e -> {
             CsvImportService.ImportPreview p = holder[0];
             if (p == null || p.importable == 0) return;
-            CsvImportService.ImportSummary s = csvImportService.doImport(p);
-            Alert ok = new Alert(Alert.AlertType.INFORMATION);
-            ok.initOwner(owner);
-            ok.setTitle("导入完成");
-            ok.setHeaderText("血糖数据导入结果");
-            StringBuilder sb = new StringBuilder(CsvImportService.resultText(s));
-            sb.append("\n重复跳过（文件内 ").append(p.dupInFile).append(" 条 / 已有记录 ")
-                    .append(p.dupInDb).append(" 条），格式错误 ").append(p.invalid).append(" 条。");
-            // P0-1 异常报警：导入数据中超出报警阈值的记录数汇总提示
-            int alarmCount = 0;
-            for (CsvImportService.PreviewRow row : p.rows) {
-                if ("可导入".equals(row.status) && AlarmService.isAlarm(row.bloodSugar)) {
-                    alarmCount++;
-                }
-            }
-            if (alarmCount > 0) {
-                sb.append("\n⚠ 本次导入含 ").append(alarmCount).append(" 条超出报警阈值（<")
-                        .append(String.format("%.1f", AlarmConfig.getLow())).append(" 或 >")
-                        .append(String.format("%.1f", AlarmConfig.getHigh())).append(" mmol/L），请在表格与趋势中重点关注。");
-            }
-            sb.append("\n导入的记录已按业务日（凌晨 4 点边界）归入表格、趋势曲线、日历与统计。");
-            if (!s.failures.isEmpty()) {
-                sb.append("\n\n失败明细（最多显示 10 条）：");
-                for (int i = 0; i < Math.min(10, s.failures.size()); i++) {
-                    sb.append("\n- ").append(s.failures.get(i));
-                }
-            }
-            ok.setContentText(sb.toString());
-            styleDialogPane(ok.getDialogPane());
-            ok.showAndWait();
             importBtn.setDisable(true);
-            dialog.close();
-            refreshAll();
+            // 逐条写库最多 5000 次，放后台线程
+            runAsync("正在导入血糖数据", () -> csvImportService.doImport(p), s -> {
+                Alert ok = new Alert(Alert.AlertType.INFORMATION);
+                ok.initOwner(owner);
+                ok.setTitle("导入完成");
+                ok.setHeaderText("血糖数据导入结果");
+                StringBuilder sb = new StringBuilder(CsvImportService.resultText(s));
+                sb.append("\n重复跳过（文件内 ").append(p.dupInFile).append(" 条 / 已有记录 ")
+                        .append(p.dupInDb).append(" 条），格式错误 ").append(p.invalid).append(" 条。");
+                // P0-1 异常报警：导入数据中超出报警阈值的记录数汇总提示
+                int alarmCount = 0;
+                for (CsvImportService.PreviewRow row : p.rows) {
+                    if ("可导入".equals(row.status) && AlarmService.isAlarm(row.bloodSugar)) {
+                        alarmCount++;
+                    }
+                }
+                if (alarmCount > 0) {
+                    sb.append("\n⚠ 本次导入含 ").append(alarmCount).append(" 条超出报警阈值（<")
+                            .append(String.format("%.1f", AlarmConfig.getLow())).append(" 或 >")
+                            .append(String.format("%.1f", AlarmConfig.getHigh())).append(" mmol/L），请在表格与趋势中重点关注。");
+                }
+                sb.append("\n导入的记录已按业务日（凌晨 4 点边界）归入表格、趋势曲线、日历与统计。");
+                if (!s.failures.isEmpty()) {
+                    sb.append("\n\n失败明细（最多显示 10 条）：");
+                    for (int i = 0; i < Math.min(10, s.failures.size()); i++) {
+                        sb.append("\n- ").append(s.failures.get(i));
+                    }
+                }
+                ok.setContentText(sb.toString());
+                styleDialogPane(ok.getDialogPane());
+                ok.showAndWait();
+                importBtn.setDisable(true);
+                dialog.close();
+                refreshAll();
+            }, ex -> {
+                importBtn.setDisable(false);
+                showAlert("导入失败：" + (ex == null ? "未知错误" : ex.getMessage()));
+            });
         });
 
         VBox box = new VBox(10, btnRow, fileLb, tipLb, sumLb, previewTable, actionRow);

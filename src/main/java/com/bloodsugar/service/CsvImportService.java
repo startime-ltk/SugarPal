@@ -1,6 +1,7 @@
 package com.bloodsugar.service;
 
 import com.bloodsugar.model.BloodSugarRecord;
+import com.bloodsugar.util.AppLog;
 import com.bloodsugar.util.PeriodClassifier;
 import org.apache.poi.ss.usermodel.Cell;
 import org.apache.poi.ss.usermodel.CellType;
@@ -362,11 +363,13 @@ public class CsvImportService {
         LocalDateTime a = null, b = null;
         try {
             a = service.getLatestSavedMealTime(t);
-        } catch (SQLException ignored) {
+        } catch (SQLException e) {
+            AppLog.warn("导入时读取已保存用餐时间失败，餐别可能不准", e);
         }
         try {
             b = service.getLatestMealTimeBefore(t);
-        } catch (SQLException ignored) {
+        } catch (SQLException e) {
+            AppLog.warn("导入时读取历史用餐记录失败，餐别可能不准", e);
         }
         LocalDateTime r = a;
         if (r == null || (b != null && b.isAfter(r))) r = b;
@@ -617,6 +620,8 @@ public class CsvImportService {
             } catch (Exception ignored) {
             }
         }
+        // 所有格式都试过了还是解析不出来：这是真正需要留痕的情况
+        AppLog.warn("CSV 中的时间无法识别，已跳过该单元格: " + s);
         return null;
     }
 

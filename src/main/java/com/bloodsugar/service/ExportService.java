@@ -1,6 +1,7 @@
 package com.bloodsugar.service;
 
 import com.bloodsugar.model.BloodSugarRecord;
+import com.bloodsugar.util.AppLog;
 import com.bloodsugar.util.PeriodClassifier;
 
 import com.lowagie.text.Document;
@@ -42,15 +43,6 @@ public class ExportService {
     private static final DateTimeFormatter DATE_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd");
     private static final DateTimeFormatter TIME_FMT = DateTimeFormatter.ofPattern("HH:mm");
     private static final DateTimeFormatter DATETIME_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
-
-    // 中文字体候选：优先纯 TTF，TTC 需带索引后缀
-    private static final String[] FONT_CANDIDATES = {
-            "C:\\Windows\\Fonts\\simhei.ttf",
-            "C:\\Windows\\Fonts\\msyh.ttc,0",
-            "C:\\Windows\\Fonts\\Deng.ttf",
-            "C:\\Windows\\Fonts\\simsun.ttc,0",
-            "C:\\Windows\\Fonts\\simkai.ttf"
-    };
 
     // ==================== Excel 导出 ====================
 
@@ -437,18 +429,57 @@ public class ExportService {
         table.addCell(c);
     }
 
-    /** 找到系统中文字体并嵌入，避免 PDF 中文乱码（供本类与 AGP 报告导出复用） */
+    /**
+     * 找到系统中文字体并嵌入，避免 PDF 中文乱码（供本类与 AGP / 健康摘要导出复用）。
+     *
+     * <p>找不到系统字体时不再直接失败，而是退回到 PDF 内置的 CJK 字体
+     * （STSong-Light + UniGB-UCS2-H，不嵌入字形，由阅读器渲染）。
+     * 这样即使换一台没装中文字体的机器，PDF 依然能导出、依然能显示中文，
+     * 而不是弹一句"未找到中文字体"让整个功能不可用。
+     */
     public static BaseFont loadChineseBaseFont() throws Exception {
-        for (String candidate : FONT_CANDIDATES) {
+        for (String candidate : fontCandidates()) {
             String path = candidate.contains(",") ? candidate.substring(0, candidate.indexOf(',')) : candidate;
             if (new File(path).exists()) {
                 try {
                     return BaseFont.createFont(candidate, BaseFont.IDENTITY_H, BaseFont.EMBEDDED);
-                } catch (Exception ignored) {
+                } catch (Exception e) {
                     // 该字体加载失败，尝试下一个
+                    AppLog.warn("字体加载失败，换下一个候选: " + candidate);
                 }
             }
         }
-        throw new java.io.IOException("未找到可用的中文字体文件（simhei/msyh 等）");
+        // 兜底：PDF 阅读器自带的 CJK 字体
+        try {
+            BaseFont fallback = BaseFont.createFont("STSong-Light", "UniGB-UCS2-H", BaseFont.NOT_EMBEDDED);
+            AppLog.warn("未找到系统中文字体，已改用 PDF 内置 CJK 字体（STSong-Light，不嵌入）");
+            return fallback;
+        } catch (Exception e) {
+            throw new java.io.IOException("未找到可用的中文字体（系统字体与 PDF 内置 CJK 字体均不可用）");
+        }
+    }
+
+    /** 中文字体候选路径：Windows / macOS / Linux 各列常见字体，TTC 需带索引后缀 */
+    private static List<String> fontCandidates() {
+        List<String> list = new ArrayList<>();
+        String winDir = System.getenv("WINDIR");
+        String winFonts = (winDir == null || winDir.isBlank() ? "C:\\Windows" : winDir) + "\\Fonts\\";
+        list.add(winFonts + "simhei.ttf");
+        list.add(winFonts + "msyh.ttc,0");
+        list.add(winFonts + "msyhl.ttc,0");
+        list.add(winFonts + "Deng.ttf");
+        list.add(winFonts + "Dengb.ttf");
+        list.add(winFonts + "simsun.ttc,0");
+        list.add(winFonts + "simkai.ttf");
+        list.add(winFonts + "simfang.ttf");
+        // macOS
+        list.add("/System/Library/Fonts/PingFang.ttc,0");
+        list.add("/System/Library/Fonts/STHeiti Light.ttc,0");
+        list.add("/Library/Fonts/Arial Unicode.ttf");
+        // Linux 常见中文字体
+        list.add("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc,0");
+        list.add("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc,0");
+        list.add("/usr/share/fonts/truetype/arphic/uming.ttc,0");
+        return list;
     }
 }
