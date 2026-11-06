@@ -160,7 +160,8 @@ public class AboutDialog {
         new Thread(() -> {
             UpdateInfo update;
             try {
-                update = updateService.checkForUpdate(sourceSupplier.get(), VersionInfo.getVersion());
+                update = updateService.checkForUpdate(
+                        UpdateService.candidateSources(sourceSupplier.get()), VersionInfo.getVersion());
             } catch (UpdateException ex) {
                 Platform.runLater(() -> {
                     status.setText("检查更新失败：" + ex.getMessage());

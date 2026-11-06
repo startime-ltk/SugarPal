@@ -134,6 +134,49 @@ public class UpdateService {
     }
 
     /**
+     * 备用更新源：不依赖 GitHub Releases API（国内常被 TLS 握手/限流阻断），
+     * 改为走静态资源 CDN 上的一份版本清单（update/latest.json），可达性更好。
+     * 顺序即尝试顺序，主源失败后再依次回退到这里。
+     */
+    public static final List<String> FALLBACK_SOURCES = List.of(
+            "https://raw.githubusercontent.com/startime-ltk/SugarPal/master/update/latest.json",
+            "https://cdn.jsdelivr.net/gh/startime-ltk/SugarPal@master/update/latest.json"
+    );
+
+    /**
+     * 组合候选更新源：用户配置的源优先，随后补齐备用源（去重）。
+     */
+    public static List<String> candidateSources(String userSource) {
+        List<String> list = new ArrayList<>();
+        if (userSource != null && !userSource.isBlank()) {
+            list.add(userSource.trim());
+        }
+        for (String s : FALLBACK_SOURCES) {
+            if (!list.contains(s)) {
+                list.add(s);
+            }
+        }
+        return list;
+    }
+
+    /**
+     * 多源检查更新：按候选顺序逐个尝试，任一源成功即返回结果；
+     * 全部失败时抛出携带各源失败原因的异常。
+     */
+    public UpdateInfo checkForUpdate(List<String> sources, String currentVersion) throws UpdateException {
+        StringBuilder errors = new StringBuilder();
+        for (String src : sources) {
+            try {
+                UpdateInfo info = checkForUpdate(src, currentVersion);
+                return info;
+            } catch (UpdateException e) {
+                errors.append("• ").append(src).append(" → ").append(e.getMessage()).append("\n");
+            }
+        }
+        throw new UpdateException("所有更新源均暂不可用，请稍后重试：\n" + errors);
+    }
+
+    /**
      * 下载安装包到指定目录。优先走镜像前缀，失败回退直连。
      *
      * @param update 更新信息

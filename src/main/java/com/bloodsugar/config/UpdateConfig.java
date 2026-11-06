@@ -21,8 +21,8 @@ public class UpdateConfig {
     public static final String DEFAULT_SOURCE =
             "https://api.github.com/repos/startime-ltk/SugarPal/releases/latest";
 
-    /** 默认国内加速镜像前缀；留空表示不启用镜像加速 */
-    public static final String DEFAULT_MIRROR = "https://ghproxy.net/";
+    /** 默认国内加速镜像前缀；默认留空表示不启用镜像，仅直连下载 */
+    public static final String DEFAULT_MIRROR = "";
 
     private static final String KEY_SOURCE = "update.source";
     private static final String KEY_MIRROR = "update.mirror";
