@@ -8,12 +8,14 @@ import com.google.gson.JsonParser;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.ConnectException;
+import java.net.ProxySelector;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
+import javax.net.ssl.SSLHandshakeException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -51,6 +53,15 @@ public class UpdateService {
 
     private final HttpClient client = HttpClient.newBuilder()
             .connectTimeout(CONNECT_TIMEOUT)
+            .build();
+
+    /**
+     * 绕过系统代理的直连客户端。用于：当系统代理（如 Clash 等）对 HTTPS 做 TLS 中间人拦截、
+     * 而自带 Java 不信任其证书导致 handshake_failure 时，自动改用直连重试。
+     */
+    private final HttpClient directClient = HttpClient.newBuilder()
+            .connectTimeout(CONNECT_TIMEOUT)
+            .proxy(ProxySelector.of(null))
             .build();
 
     /**
@@ -252,12 +263,9 @@ public class UpdateService {
         HttpResponse<InputStream> response;
         try {
             response = client.send(request, HttpResponse.BodyHandlers.ofInputStream());
-        } catch (HttpTimeoutException e) {
-            throw e;
-        } catch (ConnectException e) {
-            throw e;
-        } catch (IOException e) {
-            throw e;
+        } catch (SSLHandshakeException e) {
+            // 系统代理 TLS 中间人拦截：绕过代理直连重试
+            response = directClient.send(request, HttpResponse.BodyHandlers.ofInputStream());
         }
         if (response.statusCode() != 200) {
             throw new IOException("HTTP " + response.statusCode());
@@ -281,25 +289,38 @@ public class UpdateService {
             throw new UpdateException("更新源地址格式不正确，请在关于对话框中检查", e);
         }
 
-        HttpResponse<String> response;
-        try {
-            response = client.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
-        } catch (ConnectException e) {
-            throw new UpdateException("无法连接更新源，请检查网络或更新源地址", e);
-        } catch (HttpTimeoutException e) {
-            throw new UpdateException("请求更新源超时，请检查网络后稍后重试", e);
-        } catch (IOException e) {
-            throw new UpdateException("请求更新源失败：" + e.getMessage(), e);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new UpdateException("请求被中断，请重试", e);
-        }
-
+        HttpResponse<String> response = sendWithProxyFallback(request);
         if (response.statusCode() != 200) {
             throw new UpdateException("更新源返回 HTTP " + response.statusCode() + "（"
                     + (response.body() == null ? "" : response.body().trim()) + "）");
         }
         return response.body();
+    }
+
+    /**
+     * 发送 GET：优先走系统代理（client）；若因 TLS 握手失败（常见于 Clash 等代理的
+     * 中间人拦截，Java 不信任其证书），自动改用直连客户端（directClient）重试一次。
+     */
+    private HttpResponse<String> sendWithProxyFallback(HttpRequest request) throws UpdateException {
+        try {
+            return client.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+        } catch (HttpTimeoutException e) {
+            throw new UpdateException("请求更新源超时，请检查网络后稍后重试", e);
+        } catch (ConnectException e) {
+            throw new UpdateException("无法连接更新源，请检查网络或更新源地址", e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new UpdateException("请求被中断，请重试", e);
+        } catch (SSLHandshakeException e) {
+            // 系统代理做 TLS 中间人拦截，Java 不信任其证书；绕过代理直连重试
+            try {
+                return directClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            } catch (Exception e2) {
+                throw new UpdateException("请求更新源失败（代理 TLS 拦截，已尝试直连）：" + e2.getMessage(), e2);
+            }
+        } catch (IOException e) {
+            throw new UpdateException("请求更新源失败：" + e.getMessage(), e);
+        }
     }
 
     /** 将 tag（如 v1.3.1 / 1.3.1）规范化为 1.3.1；无法识别返回空串 */
