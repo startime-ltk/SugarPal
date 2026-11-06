@@ -1,12 +1,12 @@
 {
-  "tag_name": "v1.3.8",
-  "name": "糖伴 SugarPal v1.3.8",
-  "body": "糖伴 SugarPal 桌面版 v1.3.8：新增「数据备份 / 恢复」入口（在「关于」对话框内，紧挨数据位置）。\n\n• 备份数据…：把血糖数据打包成一个 .zip（含数据库一致性快照、配置文件、版本与记录条数说明），可存到 U 盘或网盘\n• 从备份恢复…：选择备份后先展示「备份时间 / 糖伴版本 / 记录条数」再二次确认；恢复前会把当前数据整体自动另存到 backup_before_restore_* 目录，恢复失败会自动还原\n• 备份使用 H2 自带 BACKUP 命令生成一致性快照，不是直接拷贝数据库文件（直接拷贝运行中的数据库可能拿到写了一半的文件）\n• 恢复完成后会自动重启程序，避免数据库连接处于已关闭状态\n• 恢复包缺少数据库或为空时会明确拒绝，且不动当前数据\n\n覆盖升级不丢血糖数据。",
+  "tag_name": "v1.3.9",
+  "name": "糖伴 SugarPal v1.3.9",
+  "body": "糖伴 SugarPal 桌面版 v1.3.9：把「数据备份 / 恢复」做完整。\n\n• 每天首次启动自动备份一份快照，保留最近 7 天——不需要用户记得点备份\n• 「备份与恢复」改成一个清单：自动备份 + 恢复前快照都能看到时间与条数，选任意一条即可回到那个时间点（等价于「撤销上一次恢复」）\n• 恢复前先对比「备份 N 条 vs 当前 M 条」：备份比当前少时红字警告会丢多少条，再让你确认\n• 仍可手动导出 .zip 到 U 盘 / 网盘；恢复包缺数据库或为空会拒绝且不动当前数据\n• 恢复失败自动把旧文件搬回来；恢复完成后自动重启程序\n\n覆盖升级不丢血糖数据。",
   "assets": [
     {
-      "name": "SugarPal-Setup-v1.3.8.exe",
-      "browser_download_url": "https://github.com/startime-ltk/SugarPal/releases/download/v1.3.8/SugarPal-Setup-v1.3.8.exe",
-      "size": 52551948
+      "name": "SugarPal-Setup-v1.3.9.exe",
+      "browser_download_url": "https://github.com/startime-ltk/SugarPal/releases/download/v1.3.9/SugarPal-Setup-v1.3.9.exe",
+      "size": 52560401
     }
   ]
 }
