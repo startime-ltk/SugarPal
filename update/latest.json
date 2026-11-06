@@ -1,0 +1,12 @@
+{
+  "tag_name": "v1.3.3",
+  "name": "糖伴 SugarPal v1.3.3",
+  "body": "糖伴 SugarPal 桌面版 v1.3.3：安装包支持选择安装位置、默认不落系统盘；内置检查更新不变。",
+  "assets": [
+    {
+      "name": "SugarPal-Setup-v1.3.3.exe",
+      "browser_download_url": "https://github.com/startime-ltk/SugarPal/releases/download/v1.3.3/SugarPal-Setup-v1.3.3.exe",
+      "size": 52486431
+    }
+  ]
+}
