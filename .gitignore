@@ -8,14 +8,28 @@ dependency-reduced-pom.xml
 .classpath
 .project
 .settings/
+.vscode/
 
 # OS
 .DS_Store
 Thumbs.db
 
-# Database
+# 数据库（本地健康数据，绝对不能进仓库）
+*.mv.db
 *.mv.db.trace.db
+*.trace.db
+
+# 本地配置（含 API Key）
+config.properties
+location.properties
+
+# 运行日志
+logs/
+*.log
+*.log.1
 
 # Temp
-*.log
 *.tmp
+
+# 打包中间产物
+_v13*/
