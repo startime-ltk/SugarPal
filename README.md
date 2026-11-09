@@ -1,3 +1,6 @@
+> ⚠️ 本分支是 「v1.2.0 代码整理版」，仅做代码结构整理，功能与数据格式同 v1.1.0。
+> **当前版本请见 [master 分支](https://github.com/startime-ltk/SugarPal/tree/master)**；本页的血糖正常区间等数值为当时口径，以 master 分支 README 与运行版为准。
+
 # 糖伴SugarPal (Sugar Pal Blood Sugar Tracker)
 
 基于 JavaFX 的桌面血糖管理工具，支持记录血糖、趋势图表、自动餐别识别、糖尿病风险评估。
