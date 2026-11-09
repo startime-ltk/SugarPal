@@ -1,5 +1,6 @@
 > ⚠️ 本分支是 「v1.2.0 代码整理版」，仅做代码结构整理，功能与数据格式同 v1.1.0。
 > **当前版本请见 [master 分支](https://github.com/startime-ltk/SugarPal/tree/master)**；本页的血糖正常区间等数值为当时口径，以 master 分支 README 与运行版为准。
+> 当前运行版安装包：[SugarPal-Setup-v1.3.9.exe](https://github.com/startime-ltk/SugarPal/releases/download/v1.3.9/SugarPal-Setup-v1.3.9.exe)；[全部 Releases](https://github.com/startime-ltk/SugarPal/releases)。
 
 # 糖伴SugarPal (Sugar Pal Blood Sugar Tracker)
 
@@ -142,6 +143,18 @@ sugarpal/
 | created_at | TIMESTAMP | 创建时间 |
 
 ## 正常血糖范围
+
+> ⚠️ 下方两个版本的区间口径不同，请以当前版本的口径为准。
+> 当前 v1.3.9 的口径如下（完整定义见 [master 分支 README](https://github.com/startime-ltk/SugarPal/tree/master)）：
+>
+> | 时段 | 正常下限 | 正常上限 |
+> |------|---------|---------|
+> | 空腹（含餐后超 3 小时） | 3.9 | 6.1 |
+> | 餐后1h | 3.9 | **8.9** |
+> | 餐后2h | 3.9 | 7.8 |
+> | 餐后3h | 3.9 | 7.8 |
+>
+> 差异：餐后 1 小时上限由 11.1 调整为 8.9；「睡前」并入空腹口径。下表为 v1.2.0 整理版保留的历史口径，仅供参考。
 
 | 时段 | 正常下限 | 正常上限 |
 |------|---------|---------|
