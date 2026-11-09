@@ -6,6 +6,21 @@
 > **当前版本 v1.3.9**（2026-11-06）。
 > 本仓库 `master` 为当前开发分支；`main` 是 「v1.2.0 代码整理版」，仅做代码结构整理，功能与数据格式同 v1.1.0。**功能说明与运行版本请以 `master` 为准。**
 
+## 下载与版本状态
+
+**当前运行版**：[SugarPal-Setup-v1.3.9.exe](https://github.com/startime-ltk/SugarPal/releases/download/v1.3.9/SugarPal-Setup-v1.3.9.exe)（50.1 MB，2026-11-06）· [全部 Releases](https://github.com/startime-ltk/SugarPal/releases)
+
+| 位置 | 版本号 | 说明 |
+|------|--------|------|
+| `master` 分支 `pom.xml` | **1.3.9** | 当前源码版本 |
+| `main` 分支 `pom.xml` | 1.2.1 | v1.2.0 代码整理版，独立历史分支，不参与发布 |
+| tag `v1.3.9` 内 `pom.xml` | 1.3.8 | 发布时未同步 pom 的历史遗留，**不影响已发布的 v1.3.9 安装包**；下个版本发布时一次性同步 |
+| `update/latest.json` | v1.3.9 | 应用内「检查更新」指向，与安装包一致 |
+
+> 已发布的 tag 不重打、安装包不替换，避免改写历史版本语义；版本号同步在下个发布提交里完成。
+
+**源码与发布包的关系**：`v1.3.9` 发布后，`master` 上还有 2 个提交——`1633325`（数据备份三层保护）与 `6319ff9`（README 整理），尚未打进 v1.3.9 安装包，将在 v1.3.10 一并收口。安卓端 `v1.2.10` 之后也有 `ae5c678`（日历点击改备注）未进包，将在 v1.2.11 收口，详见 [SugarPal-Android README](https://github.com/startime-ltk/SugarPal-Android)。
+
 ## 技术栈
 
 | 组件 | 版本 | 用途 |
