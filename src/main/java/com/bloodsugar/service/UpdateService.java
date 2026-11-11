@@ -261,14 +261,29 @@ public class UpdateService {
     private long expectedSizeCache = -1L;
 
     /**
+     * 下载安装包到指定目录（单镜像重载，兼容旧调用）。
+     *
+     * @param update 更新信息
+     * @param targetDir 保存目录（自动创建）
+     * @param mirrorPrefix 单个镜像前缀；空串则跳过镜像
+     * @return 下载到本地的安装包路径
+     */
+    public Path download(UpdateInfo update, Path targetDir, String mirrorPrefix) throws UpdateException {
+        return download(update, targetDir,
+                (mirrorPrefix == null || mirrorPrefix.isBlank())
+                        ? List.of()
+                        : List.of(mirrorPrefix));
+    }
+
+    /**
      * 下载安装包到指定目录。
      *
-     * <p>按顺序尝试三条通道，任一成功即返回：
+     * <p>按顺序尝试多条通道，任一成功即返回：
      * <ol>
      *   <li><b>API 资产通道</b>：带 {@code Accept: application/octet-stream} 请求
      *       {@code assets[].url}，由 GitHub 302 到 {@code release-assets.githubusercontent.com}。
      *       这条链路只用 {@code api.github.com}，不经过常被阻断的 {@code github.com}。</li>
-     *   <li><b>镜像前缀</b>：用户配置的加速前缀 + 直链。</li>
+     *   <li><b>各镜像前缀</b>：如 {@code https://ghproxy.net/} + 直链，按列表顺序逐个试。</li>
      *   <li><b>直连</b>：{@code browser_download_url}（会 302 到 release-assets，需跟随重定向）。</li>
      * </ol>
      *
@@ -277,10 +292,11 @@ public class UpdateService {
      *
      * @param update 更新信息
      * @param targetDir 保存目录（自动创建）
-     * @param mirrorPrefix 镜像前缀（如 https://ghproxy.net/；空串则跳过镜像）
+     * @param mirrorPrefixes 镜像前缀列表；空列表表示跳过镜像
      * @return 下载到本地的安装包路径
      */
-    public Path download(UpdateInfo update, Path targetDir, String mirrorPrefix) throws UpdateException {
+    public Path download(UpdateInfo update, Path targetDir, List<String> mirrorPrefixes)
+            throws UpdateException {
         try {
             Files.createDirectories(targetDir);
         } catch (IOException e) {
@@ -292,7 +308,7 @@ public class UpdateService {
         Path target = targetDir.resolve(fileName);
         Path partial = targetDir.resolve(fileName + ".part");
 
-        // 组装候选地址：API 资产通道优先，其次是镜像，最后是直链
+        // 组装候选地址：API 资产通道优先，其次各镜像，最后直链
         Set<String> attempts = new LinkedHashSet<>();
         String assetApi = update.assetApiUrl;
         if (assetApi == null || assetApi.isBlank()) {
@@ -304,12 +320,17 @@ public class UpdateService {
         if (assetApi != null && !assetApi.isBlank()) {
             attempts.add(assetApi);
         }
-        String mirror = mirrorPrefix == null ? "" : mirrorPrefix.trim();
-        if (!mirror.isEmpty()) {
-            if (!mirror.endsWith("/")) {
-                mirror = mirror + "/";
+        if (mirrorPrefixes != null) {
+            for (String m0 : mirrorPrefixes) {
+                if (m0 == null || m0.isBlank()) {
+                    continue;
+                }
+                String m = m0.trim();
+                if (!m.endsWith("/")) {
+                    m = m + "/";
+                }
+                attempts.add(m + update.downloadUrl);
             }
-            attempts.add(mirror + update.downloadUrl);
         }
         if (update.downloadUrl != null && !update.downloadUrl.isBlank()) {
             attempts.add(update.downloadUrl);

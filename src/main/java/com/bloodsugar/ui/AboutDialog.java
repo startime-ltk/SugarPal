@@ -110,11 +110,10 @@ public class AboutDialog {
         TextField sourceField = new TextField(UpdateConfig.getSource());
         sourceField.setPrefColumnCount(46);
 
-        Label mirrorTitle = new Label("加速镜像前缀（留空则仅直连；例如 https://ghproxy.net/）");
+        Label mirrorTitle = new Label("加速镜像前缀（已默认启用，可用英文逗号填多个；填 none 则仅直连）");
         mirrorTitle.setFont(Font.font("Microsoft YaHei", FontWeight.BOLD, 12));
         mirrorTitle.setTextFill(Color.web(COLOR_GRAY_DARK));
         TextField mirrorField = new TextField(UpdateConfig.getMirror());
-
         Button saveCfgBtn = smallGrayButton("保存配置");
         saveCfgBtn.setOnAction(e -> {
             try {
@@ -270,7 +269,7 @@ public class AboutDialog {
     private static void downloadAndInstall(Stage owner, Button updateBtn, Label status, UpdateInfo info) {
         try {
             Path tmpDir = Path.of(System.getProperty("java.io.tmpdir"), "sugarpal-update");
-            Path installer = updateService.download(info, tmpDir, UpdateConfig.getMirror());
+            Path installer = updateService.download(info, tmpDir, UpdateConfig.getMirrors());
             Platform.runLater(() -> {
                 status.setText("下载完成，正在静默安装，请稍候……");
             });
