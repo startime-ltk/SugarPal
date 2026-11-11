@@ -1,3 +1,7 @@
+/*
+ * Copyright (c) 2026 startime-ltk
+ * SPDX-License-Identifier: MIT
+ */
 package com.bloodsugar.model;
 
 /** 一个时间段定义，用于自动归类 */

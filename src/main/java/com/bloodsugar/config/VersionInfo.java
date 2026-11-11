@@ -1,3 +1,7 @@
+/*
+ * Copyright (c) 2026 startime-ltk
+ * SPDX-License-Identifier: MIT
+ */
 package com.bloodsugar.config;
 
 import java.io.IOException;
