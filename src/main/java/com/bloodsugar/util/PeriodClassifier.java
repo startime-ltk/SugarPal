@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2026 startime-ltk
+ * Copyright (c) 2026 李图康
  * SPDX-License-Identifier: MIT
  */
 package com.bloodsugar.util;
